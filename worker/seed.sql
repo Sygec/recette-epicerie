@@ -1,0 +1,111 @@
+-- Recettes & Courses — sample/test data (Phase 1)
+--
+-- Idempotent: re-running deletes the seeded rows (fixed low IDs) and
+-- re-inserts them, so it will not pile up duplicates. Uses explicit IDs so
+-- ingredients/steps/tags line up on every run. Safe on an empty database too.
+--
+-- Apply to the remote database:
+--   wrangler d1 execute recipe-grocery-app --remote --file=./seed.sql
+-- Apply to a local dev database:
+--   wrangler d1 execute recipe-grocery-app --local --file=./seed.sql
+
+-- --- Clean out previously seeded rows (cascades to children) ------------------
+DELETE FROM recipes WHERE id IN (1, 2, 3);
+DELETE FROM grocery_lists WHERE id = 1;
+DELETE FROM tags WHERE id IN (1, 2, 3, 4, 5, 6);
+
+-- --- Tags --------------------------------------------------------------------
+INSERT INTO tags (id, name) VALUES
+  (1, 'Rapide'),
+  (2, 'Végétarien'),
+  (3, 'Italien'),
+  (4, 'Plat principal'),
+  (5, 'Poulet'),
+  (6, 'Salade');
+
+-- --- Recipe 1: Pâtes carbonara ----------------------------------------------
+INSERT INTO recipes (id, title, description, photo_url, servings, prep_time, cook_time, difficulty, source_url, notes)
+VALUES (1, 'Pâtes carbonara',
+  'La vraie carbonara romaine : pas de crème, juste des œufs, du pecorino et du guanciale.',
+  NULL, 4, 10, 15, 'Facile', 'https://www.example.com/carbonara',
+  'Retirer la poêle du feu avant d''ajouter les œufs pour éviter qu''ils ne cuisent en omelette.');
+
+INSERT INTO ingredients (recipe_id, name, quantity, unit, sort_order) VALUES
+  (1, 'Spaghetti', 400, 'g', 0),
+  (1, 'Guanciale (ou pancetta)', 150, 'g', 1),
+  (1, 'Jaunes d''œufs', 4, NULL, 2),
+  (1, 'Pecorino romano râpé', 80, 'g', 3),
+  (1, 'Poivre noir', NULL, NULL, 4);
+
+INSERT INTO steps (recipe_id, step_number, text) VALUES
+  (1, 1, 'Faire cuire les spaghetti dans une grande casserole d''eau salée.'),
+  (1, 2, 'Faire revenir le guanciale coupé en lardons jusqu''à ce qu''il soit croustillant.'),
+  (1, 3, 'Mélanger les jaunes d''œufs avec le pecorino et beaucoup de poivre.'),
+  (1, 4, 'Égoutter les pâtes, les mélanger hors du feu avec le guanciale puis le mélange œufs-fromage. Détendre avec un peu d''eau de cuisson.');
+
+INSERT INTO recipe_tags (recipe_id, tag_id) VALUES (1, 3), (1, 4);
+
+-- --- Recipe 2: Poulet rôti aux légumes --------------------------------------
+INSERT INTO recipes (id, title, description, photo_url, servings, prep_time, cook_time, difficulty, source_url, notes)
+VALUES (2, 'Poulet rôti aux légumes',
+  'Un poulet du dimanche tout simple, rôti sur un lit de légumes racines.',
+  NULL, 4, 20, 75, 'Moyen', NULL,
+  'Arroser le poulet avec son jus toutes les 20 minutes pour une peau bien dorée.');
+
+INSERT INTO ingredients (recipe_id, name, quantity, unit, sort_order) VALUES
+  (2, 'Poulet entier', 1, NULL, 0),
+  (2, 'Pommes de terre', 800, 'g', 1),
+  (2, 'Carottes', 4, NULL, 2),
+  (2, 'Oignons', 2, NULL, 3),
+  (2, 'Huile d''olive', 3, 'c. à soupe', 4),
+  (2, 'Thym', NULL, NULL, 5),
+  (2, 'Sel et poivre', NULL, NULL, 6);
+
+INSERT INTO steps (recipe_id, step_number, text) VALUES
+  (2, 1, 'Préchauffer le four à 200 °C.'),
+  (2, 2, 'Couper les légumes en gros morceaux et les disposer dans un plat avec l''huile, le thym, le sel et le poivre.'),
+  (2, 3, 'Poser le poulet sur les légumes, l''assaisonner généreusement.'),
+  (2, 4, 'Enfourner environ 1 h 15, en arrosant régulièrement, jusqu''à ce que le jus soit clair.');
+
+INSERT INTO recipe_tags (recipe_id, tag_id) VALUES (2, 4), (2, 5);
+
+-- --- Recipe 3: Salade de quinoa (favorite) ----------------------------------
+INSERT INTO recipes (id, title, description, photo_url, servings, prep_time, cook_time, difficulty, source_url, notes)
+VALUES (3, 'Salade de quinoa aux légumes',
+  'Une salade fraîche et complète, parfaite pour les lunchs de la semaine.',
+  NULL, 2, 15, 15, 'Facile', NULL, NULL);
+
+INSERT INTO ingredients (recipe_id, name, quantity, unit, sort_order) VALUES
+  (3, 'Quinoa', 200, 'g', 0),
+  (3, 'Concombre', 1, NULL, 1),
+  (3, 'Tomates cerises', 250, 'g', 2),
+  (3, 'Feta', 100, 'g', 3),
+  (3, 'Citron', 1, NULL, 4),
+  (3, 'Huile d''olive', 2, 'c. à soupe', 5),
+  (3, 'Menthe fraîche', NULL, NULL, 6);
+
+INSERT INTO steps (recipe_id, step_number, text) VALUES
+  (3, 1, 'Rincer le quinoa et le cuire 15 min dans deux fois son volume d''eau. Laisser tiédir.'),
+  (3, 2, 'Couper le concombre et les tomates cerises, émietter la feta.'),
+  (3, 3, 'Mélanger le tout avec le jus de citron, l''huile d''olive et la menthe ciselée. Assaisonner.');
+
+INSERT INTO recipe_tags (recipe_id, tag_id) VALUES (3, 1), (3, 2), (3, 6);
+
+-- Mark the quinoa salad as a favorite.
+INSERT INTO favorites (recipe_id) VALUES (3) ON CONFLICT(recipe_id) DO NOTHING;
+
+-- --- Grocery list -----------------------------------------------------------
+INSERT INTO grocery_lists (id, name) VALUES (1, 'Liste de courses');
+
+-- category_id references the seeded aisle categories:
+--   1 Fruits et légumes · 2 Viandes et poissons · 4 Produits laitiers et œufs
+--   5 Boulangerie et pain · 7 Pâtes et sauces · 13 Boissons
+INSERT INTO grocery_items (list_id, name, quantity, unit, category_id, recipe_id, is_checked) VALUES
+  (1, 'Bananes', 6, NULL, 1, NULL, 0),
+  (1, 'Tomates cerises', 250, 'g', 1, 3, 0),
+  (1, 'Poulet entier', 1, NULL, 2, 2, 0),
+  (1, 'Lait', 2, 'L', 4, NULL, 1),
+  (1, 'Feta', 100, 'g', 4, 3, 0),
+  (1, 'Baguette', 2, NULL, 5, NULL, 1),
+  (1, 'Spaghetti', 400, 'g', 7, 1, 0),
+  (1, 'Café', 1, NULL, 13, NULL, 0);
