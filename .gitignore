@@ -24,3 +24,6 @@ npm-debug.log*
 # Env
 .env
 .env.local
+
+# Stray compiled JS from worker TS sources
+worker/src/**/*.js
