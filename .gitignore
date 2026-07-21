@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+frontend/dist/
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Cloudflare / Wrangler
+.wrangler/
+.dev.vars
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+
+# Env
+.env
+.env.local

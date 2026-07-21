@@ -1,0 +1,21 @@
+name = "recipe-grocery-worker"
+main = "src/index.ts"
+compatibility_date = "2026-07-21"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "recipe-grocery-app"
+database_id = "6782f5af-9035-4725-ad2e-eb62aba5b364"
+
+[[r2_buckets]]
+binding = "PHOTOS"
+bucket_name = "recipe-grocery-app-photos"
+
+# Set the shared login password as a secret before deploying:
+#   wrangler secret put APP_PASSWORD
+#
+# vars below are safe defaults for local dev only (wrangler dev),
+# do NOT rely on this for production — always use `wrangler secret put`.
+[vars]
+APP_PASSWORD = "changeme-for-local-dev"
