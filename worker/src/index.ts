@@ -422,4 +422,21 @@ app.delete("/api/grocery-items/:id", async (c) => {
   return c.json({ ok: true });
 });
 
+// ---------------------------------------------------------------------------
+// Static frontend (single origin)
+// ---------------------------------------------------------------------------
+// The built SPA is served from the same Worker via the ASSETS binding. Static
+// files (JS/CSS/manifest) are served by the platform before this Worker even
+// runs; requests that don't match a file fall through to here. For client-side
+// routes (e.g. /courses, /recettes/1) the ASSETS binding returns index.html,
+// because [assets] not_found_handling is set to "single-page-application".
+app.get("*", (c) => {
+  const path = new URL(c.req.url).pathname;
+  // Unknown API/photo paths should 404 as JSON, not fall back to the SPA shell.
+  if (path.startsWith("/api/") || path.startsWith("/photos/")) {
+    return c.notFound();
+  }
+  return c.env.ASSETS.fetch(c.req.raw);
+});
+
 export default app;

@@ -12,6 +12,15 @@ database_id = "6782f5af-9035-4725-ad2e-eb62aba5b364"
 binding = "PHOTOS"
 bucket_name = "recipe-grocery-app-photos"
 
+# Serve the built frontend SPA from this same Worker (single origin).
+# Build the frontend first (cd ../frontend && npm run build), then `wrangler
+# deploy` here uploads ../frontend/dist alongside the API. Client-side routes
+# fall back to index.html; /api/* and /photos/* are handled by the Worker.
+[assets]
+directory = "../frontend/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
 # Set the shared login password as a secret before deploying:
 #   wrangler secret put APP_PASSWORD
 #

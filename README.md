@@ -8,7 +8,8 @@ Infrastructure (D1 + R2) is already provisioned on your Cloudflare account:
 
 This scaffold has two parts:
 
-- `worker/` — the API (Hono on Cloudflare Workers), talks to D1 and R2
+- `worker/` — the API (Hono on Cloudflare Workers), talks to D1 and R2, and
+  also serves the built frontend as static assets (single origin)
 - `frontend/` — the React + Tailwind PWA, talks to the Worker API
 
 ## What's included (Phase 1)
@@ -39,31 +40,37 @@ wrangler secret put APP_PASSWORD
 # paste the password you want to use — do not commit it anywhere
 ```
 
-### 2. Deploy the Worker (API)
+### 2. Build the frontend
 
-```bash
-wrangler deploy
-```
-
-This prints a `*.workers.dev` URL — that's your API base.
-
-### 3. Deploy the frontend to Pages
+The Worker serves the frontend as static assets, so it needs to be built
+first. The Worker's `wrangler.toml` points `[assets].directory` at
+`../frontend/dist`.
 
 ```bash
 cd ../frontend
 npm install
 npm run build
-wrangler pages deploy dist --project-name=recipe-grocery-app
 ```
 
-### 4. Connect frontend to the Worker
+### 3. Deploy the Worker (API + frontend, single origin)
 
-In production, the frontend needs `/api/*` and `/photos/*` requests routed to
-the Worker. The simplest approach: add a Pages Function or a `_routes.json` /
-custom domain route so the Pages project proxies those paths to the deployed
-Worker (the local `vite.config.ts` proxy only works for `wrangler dev`/`vite
-dev`). Alternatively, point the frontend's `fetch` calls in `src/lib/api.ts`
-at the full `https://recipe-grocery-worker.<your-subdomain>.workers.dev` URL.
+```bash
+cd ../worker
+wrangler deploy
+```
+
+This uploads the API **and** `../frontend/dist` together and prints a single
+`*.workers.dev` URL. That one origin serves everything:
+
+- `/api/*` and `/photos/*` are handled by the Worker
+- static files (JS/CSS/manifest) are served directly
+- any other path falls back to `index.html` so client-side routing works
+
+Because the frontend and API share an origin, the frontend's relative
+`fetch("/api/...")` calls in `src/lib/api.ts` work in production as-is — no
+Pages project, `_routes.json`, or CORS configuration required. Re-run
+`npm run build` in `frontend/` and `wrangler deploy` in `worker/` to ship
+frontend changes.
 
 ## Local development
 
