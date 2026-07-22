@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import Nav from "./components/Nav";
 import Login from "./pages/Login";
 import RecipeList from "./pages/RecipeList";
@@ -13,6 +13,10 @@ function RequireAuth({ children }: { children: JSX.Element }) {
 }
 
 export default function App() {
+  // Subscribe to route changes so the auth check below re-runs after login
+  // navigates client-side (otherwise the token snapshot stays stale and the
+  // nav bar never appears until a full page reload).
+  useLocation();
   const authed = !!getToken();
 
   return (
