@@ -308,19 +308,46 @@ function stripLeadingConnector(text: string): string {
     .trim();
 }
 
-// Careful baking sites routinely append a weight/metric conversion right
-// after the unit — "2 cups (250g) flour", "1/2 cup (8 Tbsp; 113g) butter" —
-// which otherwise ends up glued onto the front of the name. That conversion
-// is real information (gram weights are often more precise than cup
-// measurements for baking), so it's moved to the end rather than discarded:
-// "2 cups (250g) flour" -> "flour (250g)". Only a LEADING parenthetical is
-// touched — one appearing later in the name ("walnuts (or pecans)") is left
-// exactly where it is.
-function moveLeadingParentheticalToEnd(text: string): string {
-  const match = text.match(/^\(([^)]*)\)\s*(.*)$/);
-  if (!match) return text;
-  const [, paren, rest] = match;
-  return rest ? `${rest} (${paren})` : `(${paren})`;
+// Everything between the primary unit and the real ingredient name is
+// measurement info to preserve, not discard — but it can take more than one
+// shape, and shapes can chain: a leading parenthetical ("2 cups (250g)
+// flour"), a second bare "<number> <unit>" descriptor before its own
+// parenthetical ("1 can 796 ml (28 oz) crushed tomatoes"), or — in French —
+// both stacked behind two separate "de" connectors ("1 boîte de 796 ml
+// (28 oz) de tomates broyées": "a can OF 796ml (28oz) OF crushed tomatoes").
+// Real ingredient names never start with a digit or an open paren, so
+// anything matching those shapes at this position is measurement info;
+// loop until neither shape (nor a connector introducing one) matches
+// anymore, collecting each piece to append at the end instead of losing it.
+function extractName(text: string): string {
+  let working = text.trim();
+  const extras: string[] = [];
+
+  for (let i = 0; i < 3; i++) {
+    working = stripLeadingConnector(working);
+
+    const sizeMatch = working.match(
+      /^(\d+(?:[.,]\d+)?\s*\p{L}+\.?)(?:\s*\(([^)]*)\))?\s*(.*)$/u
+    );
+    if (sizeMatch) {
+      extras.push(sizeMatch[1]);
+      if (sizeMatch[2]) extras.push(sizeMatch[2]);
+      working = sizeMatch[3];
+      continue;
+    }
+
+    const parenMatch = working.match(/^\(([^)]*)\)\s*(.*)$/);
+    if (parenMatch) {
+      extras.push(parenMatch[1]);
+      working = parenMatch[2];
+      continue;
+    }
+
+    break;
+  }
+
+  const name = working.trim();
+  return extras.length ? `${name || working} (${extras.join("; ")})` : name;
 }
 
 const UNICODE_FRACTIONS: Record<string, number> = {
@@ -394,19 +421,17 @@ export function splitIngredientLine(line: string): ImportedIngredient {
   const lowerRest = rest.toLowerCase();
   for (const phrase of MULTI_WORD_UNITS) {
     if (lowerRest.startsWith(phrase)) {
-      const name = stripLeadingConnector(
-        moveLeadingParentheticalToEnd(rest.slice(phrase.length))
-      );
+      const name = extractName(rest.slice(phrase.length));
       return { name: name || rest, quantity, unit: rest.slice(0, phrase.length) };
     }
   }
 
   const restMatch = rest.match(/^(\S+)\s+(.*)$/);
   if (restMatch && KNOWN_UNITS.has(restMatch[1].toLowerCase().replace(/\.$/, ""))) {
-    const name = stripLeadingConnector(moveLeadingParentheticalToEnd(restMatch[2]));
+    const name = extractName(restMatch[2]);
     return { name: name || restMatch[2], quantity, unit: restMatch[1] };
   }
-  return { name: moveLeadingParentheticalToEnd(rest) || rest, quantity };
+  return { name: extractName(rest) || rest, quantity };
 }
 
 // ---------------------------------------------------------------------------
