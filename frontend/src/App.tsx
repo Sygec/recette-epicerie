@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
 import Nav from "./components/Nav";
 import Login from "./pages/Login";
 import RecipeList from "./pages/RecipeList";
@@ -10,6 +10,22 @@ import { getToken } from "./lib/api";
 function RequireAuth({ children }: { children: JSX.Element }) {
   if (!getToken()) return <Navigate to="/connexion" replace />;
   return children;
+}
+
+// React Router reuses a route's component instance when navigating between
+// sibling routes that render the same component type at the same position
+// (e.g. /recettes/1 -> /recettes/2, or edit -> nouvelle) — the component
+// never unmounts, so state from the previous recipe can leak into the next
+// page until its data finishes loading. Keying by the route param forces a
+// clean remount on every navigation instead.
+function RecipeDetailRoute() {
+  const { id } = useParams();
+  return <RecipeDetail key={id} />;
+}
+
+function RecipeFormRoute() {
+  const { id } = useParams();
+  return <RecipeForm key={id ?? "new"} />;
 }
 
 export default function App() {
@@ -37,7 +53,7 @@ export default function App() {
             path="/recettes/nouvelle"
             element={
               <RequireAuth>
-                <RecipeForm />
+                <RecipeFormRoute />
               </RequireAuth>
             }
           />
@@ -45,7 +61,7 @@ export default function App() {
             path="/recettes/:id"
             element={
               <RequireAuth>
-                <RecipeDetail />
+                <RecipeDetailRoute />
               </RequireAuth>
             }
           />
@@ -53,7 +69,7 @@ export default function App() {
             path="/recettes/:id/modifier"
             element={
               <RequireAuth>
-                <RecipeForm />
+                <RecipeFormRoute />
               </RequireAuth>
             }
           />
