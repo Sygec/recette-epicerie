@@ -134,6 +134,13 @@ export default function RecipeForm() {
   const inputClass =
     "mt-1 w-full rounded-lg border border-line bg-white px-3 py-2 focus:border-sage focus:outline-none";
   const labelClass = "block text-sm font-medium text-ink/80";
+  // Ingredient row inputs size themselves via flex-1 / w-20 / w-24, which
+  // conflicts with the w-full baked into inputClass above (Tailwind's
+  // generated stylesheet order — not the className string order — decides
+  // which width utility wins, and w-full was winning). This variant omits
+  // width so each row input's own sizing class applies correctly.
+  const rowInputClass =
+    "min-w-0 rounded-lg border border-line bg-white px-3 py-2 focus:border-sage focus:outline-none";
 
   return (
     <form onSubmit={handleSubmit} className="mx-auto max-w-2xl px-4 pb-24 pt-6">
@@ -231,19 +238,23 @@ export default function RecipeForm() {
                 value={row.name}
                 onChange={(e) => updateIngredient(idx, "name", e.target.value)}
                 placeholder="Nom"
-                className={`${inputClass} mt-0 flex-1`}
+                className={`${rowInputClass} flex-1`}
               />
               <input
+                type="number"
+                inputMode="decimal"
+                step="any"
+                min="0"
                 value={row.quantity}
                 onChange={(e) => updateIngredient(idx, "quantity", e.target.value)}
                 placeholder="Qté"
-                className={`${inputClass} mt-0 w-20`}
+                className={`${rowInputClass} w-20`}
               />
               <input
                 value={row.unit}
                 onChange={(e) => updateIngredient(idx, "unit", e.target.value)}
                 placeholder="Unité"
-                className={`${inputClass} mt-0 w-24`}
+                className={`${rowInputClass} w-24`}
               />
               <button
                 type="button"
