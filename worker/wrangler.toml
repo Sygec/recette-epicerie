@@ -21,10 +21,7 @@ directory = "../frontend/dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
 
-# Set the shared login password as a secret before deploying:
-#   wrangler secret put APP_PASSWORD
-#
-# vars below are safe defaults for local dev only (wrangler dev),
-# do NOT rely on this for production — always use `wrangler secret put`.
-[vars]
-APP_PASSWORD = "changeme-for-local-dev"
+# APP_PASSWORD (the shared login password) is NOT stored here on purpose.
+#   - Production: set it as an encrypted secret before deploying:
+#       wrangler secret put APP_PASSWORD
+#   - Local dev: put it in worker/.dev.vars (gitignored). See .dev.vars.example.
