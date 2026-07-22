@@ -5,6 +5,7 @@ export default function GroceryList() {
   const [items, setItems] = useState<GroceryItem[]>([]);
   const [newItemName, setNewItemName] = useState("");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   function refresh() {
     return api.getGroceryItems().then(setItems);
@@ -17,23 +18,44 @@ export default function GroceryList() {
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     if (!newItemName.trim()) return;
-    await api.addGroceryItem({ name: newItemName.trim() });
-    setNewItemName("");
-    refresh();
+    setError(null);
+    try {
+      await api.addGroceryItem({ name: newItemName.trim() });
+      setNewItemName("");
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Impossible d'ajouter l'article");
+    }
   }
 
   async function handleToggle(item: GroceryItem) {
+    setError(null);
     setItems((rows) =>
       rows.map((r) =>
         r.id === item.id ? { ...r, is_checked: item.is_checked ? 0 : 1 } : r
       )
     );
-    await api.toggleGroceryItem(item.id, !item.is_checked);
+    try {
+      await api.toggleGroceryItem(item.id, !item.is_checked);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Impossible de mettre à jour l'article"
+      );
+      refresh(); // undo the optimistic update by resyncing with the server
+    }
   }
 
   async function handleDelete(id: number) {
+    setError(null);
     setItems((rows) => rows.filter((r) => r.id !== id));
-    await api.deleteGroceryItem(id);
+    try {
+      await api.deleteGroceryItem(id);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Impossible de supprimer l'article"
+      );
+      refresh(); // undo the optimistic removal by resyncing with the server
+    }
   }
 
   const grouped = useMemo(() => {
@@ -64,6 +86,8 @@ export default function GroceryList() {
           Ajouter
         </button>
       </form>
+
+      {error && <p className="mt-3 text-sm text-brick">{error}</p>}
 
       {loading ? (
         <p className="mt-10 text-center text-ink/40">Chargement…</p>

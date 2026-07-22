@@ -2,11 +2,26 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, RecipeDetail as RecipeDetailType } from "../lib/api";
 
+// Only http(s) URLs are safe to render as a clickable href — anything else
+// (notably a javascript: URL) would execute in-page on click, with access to
+// the session token in localStorage since the frontend and API share an
+// origin. source_url is free-text the user typed into the recipe form, so it
+// must be checked at render time regardless of what the form itself allows.
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export default function RecipeDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [recipe, setRecipe] = useState<RecipeDetailType | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -19,27 +34,51 @@ export default function RecipeDetail() {
   async function toggleFavorite() {
     if (!recipe) return;
     const next = !recipe.is_favorite;
+    setActionError(null);
     setRecipe({ ...recipe, is_favorite: next });
-    await api.setFavorite(recipe.id, next);
+    try {
+      await api.setFavorite(recipe.id, next);
+    } catch (err) {
+      setRecipe((r) => (r ? { ...r, is_favorite: !next } : r));
+      setActionError(
+        err instanceof Error ? err.message : "Impossible de mettre à jour le favori"
+      );
+    }
   }
 
   async function handleDelete() {
     if (!recipe) return;
     if (!confirm(`Supprimer « ${recipe.title} » ?`)) return;
-    await api.deleteRecipe(recipe.id);
-    navigate("/");
+    setActionError(null);
+    try {
+      await api.deleteRecipe(recipe.id);
+      navigate("/");
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : "Impossible de supprimer la recette"
+      );
+    }
   }
 
   async function addAllToGroceryList() {
     if (!recipe) return;
-    for (const ing of recipe.ingredients) {
-      await api.addGroceryItem({
-        name: ing.name,
-        quantity: ing.quantity ?? undefined,
-        unit: ing.unit ?? undefined,
-      });
+    setActionError(null);
+    try {
+      for (const ing of recipe.ingredients) {
+        await api.addGroceryItem({
+          name: ing.name,
+          quantity: ing.quantity ?? undefined,
+          unit: ing.unit ?? undefined,
+        });
+      }
+      navigate("/courses");
+    } catch (err) {
+      setActionError(
+        err instanceof Error
+          ? `Certains ingrédients n'ont pas pu être ajoutés (${err.message}). Vérifiez la liste de courses.`
+          : "Impossible d'ajouter les ingrédients à la liste de courses"
+      );
     }
-    navigate("/courses");
   }
 
   if (error) return <p className="p-6 text-brick">{error}</p>;
@@ -97,6 +136,8 @@ export default function RecipeDetail() {
           </div>
         )}
 
+        {actionError && <p className="mt-3 text-sm text-brick">{actionError}</p>}
+
         <div className="mt-6 flex gap-2">
           <button
             onClick={addAllToGroceryList}
@@ -152,9 +193,18 @@ export default function RecipeDetail() {
         {recipe.source_url && (
           <p className="mt-8 text-xs text-ink/40">
             Source :{" "}
-            <a href={recipe.source_url} className="underline">
-              {recipe.source_url}
-            </a>
+            {isHttpUrl(recipe.source_url) ? (
+              <a
+                href={recipe.source_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline"
+              >
+                {recipe.source_url}
+              </a>
+            ) : (
+              recipe.source_url
+            )}
           </p>
         )}
 

@@ -7,6 +7,19 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.use("*", cors());
 
+// Recipe photos are stored in R2 and later re-served with this same
+// Content-Type, on the same origin as the app (see the ASSETS catch-all
+// below). Without an allowlist, an uploaded file claiming to be text/html or
+// image/svg+xml could execute as a same-origin page when its /photos/* URL
+// is opened directly — a stored-XSS path to the session token in
+// localStorage. Only accept real raster image types.
+const ALLOWED_PHOTO_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+]);
+
 // ---------------------------------------------------------------------------
 // Auth — shared login (one account, session token)
 // ---------------------------------------------------------------------------
@@ -266,6 +279,13 @@ app.post("/api/recipes/:id/photo", async (c) => {
 
   if (!isFile(file)) {
     return c.json({ error: "Aucune photo fournie" }, 400);
+  }
+
+  if (!ALLOWED_PHOTO_TYPES.has(file.type)) {
+    return c.json(
+      { error: "Format de fichier non pris en charge (JPEG, PNG, WEBP ou GIF requis)" },
+      400
+    );
   }
 
   const key = `recipes/${id}/${Date.now()}-${file.name}`;
