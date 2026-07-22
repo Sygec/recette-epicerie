@@ -239,6 +239,22 @@ function flattenInstructions(value: unknown): string[] {
   return steps;
 }
 
+// WordPress recipe plugins (Tasty Recipes among them) sometimes emit
+// HTML-entity-encoded text inside JSON-LD string values, even though
+// schema.org expects plain text there — e.g. a literal "&amp;" or "&#8217;"
+// showing up in an ingredient line instead of "&" or an apostrophe. Decode
+// the common named entities plus any numeric entity generically.
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+};
+
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)))
+    .replace(/&([a-zA-Z]+);/g, (full, name) => NAMED_ENTITIES[name.toLowerCase()] ?? full);
+}
+
 function extractTags(value: unknown): string[] {
   if (typeof value === "string") {
     return value
@@ -264,59 +280,127 @@ const KNOWN_UNITS = new Set([
   "pincée", "gousse", "gousses", "tranche", "tranches",
   "sachet", "sachets", "boîte", "boîtes", "botte", "bottes",
   "cup", "cups", "tbsp", "tsp", "oz", "lb", "lbs",
+  "teaspoon", "teaspoons", "tablespoon", "tablespoons",
+  "pound", "pounds", "ounce", "ounces", "quart", "quarts",
+  "pint", "pints", "gram", "grams", "kilogram", "kilograms",
+  "stick", "sticks",
   "clove", "cloves", "pinch", "slice", "slices", "can", "cans",
   "package", "packages",
 ]);
 
-// French units are often multi-word ("c. à soupe", "cuillère à café") — check
-// these as whole phrases before falling back to the single-token check below,
-// longest first so "cuillères à soupe" doesn't get cut short.
+// French/English units are often multi-word ("c. à soupe", "cuillère à
+// café") — check these as whole phrases before falling back to the
+// single-token check below, longest first so "cuillères à soupe" doesn't
+// get cut short.
 const MULTI_WORD_UNITS = [
   "cuillères à soupe", "cuillères à café", "cuillères à thé",
   "cuillère à soupe", "cuillère à café", "cuillère à thé",
   "c. à soupe", "c. à café", "c. à thé",
 ];
 
-// French ingredient lines routinely read "<qty> <unit> de <name>" ("250 g de
-// farine"); strip that connector so the extracted name is just "farine".
+// "<qty> <unit> de/d' <name>" (French) or "<qty> <unit> of <name>" (English)
+// is extremely common; strip the connector so the extracted name is just
+// "farine" / "flour", not "de farine" / "of flour".
 function stripLeadingConnector(text: string): string {
-  return text.trim().replace(/^(de\s+|d['’]\s*)/i, "").trim();
+  return text
+    .trim()
+    .replace(/^(de\s+|d['’]\s*|of\s+)/i, "")
+    .trim();
 }
 
-function parseLeadingQuantity(text: string): number | undefined {
-  if (text.includes("/")) {
-    const [num, den] = text.split("/").map(Number);
-    return den ? num / den : undefined;
+// Careful baking sites routinely append a weight/metric conversion right
+// after the unit — "2 cups (250g) flour", "1/2 cup (8 Tbsp; 113g) butter" —
+// which otherwise ends up glued onto the front of the name. Only strip a
+// LEADING parenthetical (right after the unit), not one appearing later in
+// the name ("walnuts (or pecans)" should keep its parenthetical).
+function stripLeadingParenthetical(text: string): string {
+  return text.replace(/^\([^)]*\)\s*/, "").trim();
+}
+
+const UNICODE_FRACTIONS: Record<string, number> = {
+  "¼": 0.25, "½": 0.5, "¾": 0.75,
+  "⅓": 1 / 3, "⅔": 2 / 3,
+  "⅕": 0.2, "⅖": 0.4, "⅗": 0.6, "⅘": 0.8,
+  "⅙": 1 / 6, "⅚": 5 / 6,
+  "⅛": 0.125, "⅜": 0.375, "⅝": 0.625, "⅞": 0.875,
+};
+const UNICODE_FRACTION_CHARS = Object.keys(UNICODE_FRACTIONS).join("");
+
+// Tries the most specific quantity shapes first (mixed numbers, fractions)
+// before falling back to a plain decimal/range — each attempt is a whole,
+// anchored regex rather than one big alternation, so a partial match on a
+// simpler shape (e.g. the "3" in "3/4") never wins over the shape that
+// actually describes the whole quantity. Returns the parsed value and
+// however much of the leading text it consumed.
+function parseLeadingQuantity(
+  text: string
+): { value: number; consumed: number } | undefined {
+  // "1 and 3/4" — a mixed number spelled out with "and", common in US baking
+  // blogs.
+  let m = text.match(/^(\d+)\s+and\s+(\d+)\/(\d+)/i);
+  if (m) {
+    const [whole, num, den] = [m[1], m[2], m[3]].map(Number);
+    return { value: whole + num / den, consumed: m[0].length };
   }
-  const match = text.match(/^(\d+(?:\.\d+)?)/);
-  return match ? parseFloat(match[1]) : undefined;
+
+  // "1 1/2" — a mixed number written with a space.
+  m = text.match(/^(\d+)\s+(\d+)\/(\d+)(?=\s|$)/);
+  if (m) {
+    const [whole, num, den] = [m[1], m[2], m[3]].map(Number);
+    return { value: whole + num / den, consumed: m[0].length };
+  }
+
+  // "1½" or "1 ½" — a whole number followed directly by a unicode fraction.
+  m = text.match(new RegExp(`^(\\d+)\\s*([${UNICODE_FRACTION_CHARS}])`));
+  if (m) {
+    return {
+      value: Number(m[1]) + UNICODE_FRACTIONS[m[2]],
+      consumed: m[0].length,
+    };
+  }
+
+  // "½" alone.
+  m = text.match(new RegExp(`^([${UNICODE_FRACTION_CHARS}])`));
+  if (m) return { value: UNICODE_FRACTIONS[m[1]], consumed: m[0].length };
+
+  // "3/4" — a bare fraction.
+  m = text.match(/^(\d+)\/(\d+)/);
+  if (m) return { value: Number(m[1]) / Number(m[2]), consumed: m[0].length };
+
+  // "2", "2.5", "2-3" (a range keeps only its first number).
+  m = text.match(/^(\d+(?:[.,]\d+)?)(?:\s*[-–à]\s*\d+(?:[.,]\d+)?)?/);
+  if (m) return { value: parseFloat(m[1].replace(",", ".")), consumed: m[0].length };
+
+  return undefined;
 }
 
 export function splitIngredientLine(line: string): ImportedIngredient {
   const trimmed = line.trim().replace(/\s+/g, " ");
-  const match = trimmed.match(
-    /^(\d+(?:[.,]\d+)?(?:\s*[-–à]\s*\d+(?:[.,]\d+)?)?|\d+\/\d+)\s*(.*)$/
-  );
-  if (!match) return { name: trimmed };
+  const parsed = parseLeadingQuantity(trimmed);
+  if (!parsed) return { name: trimmed };
 
-  const quantity = parseLeadingQuantity(match[1].replace(",", "."));
-  const rest = match[2];
-  if (quantity === undefined || !rest) return { name: trimmed };
+  // Fraction-derived quantities (1/3 -> 0.3333...) round to 2 decimals for a
+  // presentable form value; real-world quantities never need more precision.
+  const quantity = Math.round(parsed.value * 100) / 100;
+  const rest = trimmed.slice(parsed.consumed).trim();
+  if (!rest) return { name: trimmed };
 
   const lowerRest = rest.toLowerCase();
   for (const phrase of MULTI_WORD_UNITS) {
     if (lowerRest.startsWith(phrase)) {
-      const name = stripLeadingConnector(rest.slice(phrase.length));
+      const name = stripLeadingConnector(
+        stripLeadingParenthetical(rest.slice(phrase.length))
+      );
       return { name: name || rest, quantity, unit: rest.slice(0, phrase.length) };
     }
   }
 
   const restMatch = rest.match(/^(\S+)\s+(.*)$/);
   if (restMatch && KNOWN_UNITS.has(restMatch[1].toLowerCase().replace(/\.$/, ""))) {
-    const name = stripLeadingConnector(restMatch[2]);
+    const name = stripLeadingConnector(stripLeadingParenthetical(restMatch[2]));
     return { name: name || restMatch[2], quantity, unit: restMatch[1] };
   }
-  return { name: rest, quantity };
+  return { name: stripLeadingParenthetical(rest) || rest, quantity };
 }
 
 // ---------------------------------------------------------------------------
@@ -331,16 +415,22 @@ export function mapJsonLdToRecipe(node: JsonLdNode): ImportedRecipe {
       : [];
 
   return {
-    title: typeof node.name === "string" ? node.name : "Recette importée",
-    description: typeof node.description === "string" ? node.description : undefined,
+    title:
+      typeof node.name === "string"
+        ? decodeHtmlEntities(node.name)
+        : "Recette importée",
+    description:
+      typeof node.description === "string"
+        ? decodeHtmlEntities(node.description)
+        : undefined,
     servings: parseServings(node.recipeYield),
     prep_time: parseIsoDurationToMinutes(node.prepTime),
     cook_time: parseIsoDurationToMinutes(node.cookTime),
     ingredients: (rawIngredients as unknown[])
       .filter((i): i is string => typeof i === "string")
-      .map(splitIngredientLine),
-    steps: flattenInstructions(node.recipeInstructions),
-    tags: extractTags(node.keywords ?? node.recipeCategory),
+      .map((i) => splitIngredientLine(decodeHtmlEntities(i))),
+    steps: flattenInstructions(node.recipeInstructions).map(decodeHtmlEntities),
+    tags: extractTags(node.keywords ?? node.recipeCategory).map(decodeHtmlEntities),
     image_url: extractImageUrl(node.image),
     source: "json-ld",
   };
@@ -350,8 +440,10 @@ export function mapFallbackToRecipe(extracted: ExtractedHtml): ImportedRecipe | 
   const title = extracted.ogTitle ?? extracted.pageTitle;
   if (!title) return undefined;
   return {
-    title,
-    description: extracted.ogDescription,
+    title: decodeHtmlEntities(title),
+    description: extracted.ogDescription
+      ? decodeHtmlEntities(extracted.ogDescription)
+      : undefined,
     ingredients: [],
     steps: [],
     tags: [],
