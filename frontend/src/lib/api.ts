@@ -86,6 +86,18 @@ export const api = {
     });
   },
 
+  importRecipe: (url: string) =>
+    request<ImportedRecipe>("/api/recipes/import", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    }),
+
+  setPhotoFromUrl: (id: number, url: string) =>
+    request<{ photo_url: string }>(`/api/recipes/${id}/photo-from-url`, {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    }),
+
   setFavorite: (id: number, favorite: boolean) =>
     request<{ ok: true }>(`/api/recipes/${id}/favorite`, {
       method: favorite ? "POST" : "DELETE",
@@ -173,6 +185,26 @@ export interface RecipePayload {
   ingredients?: { name: string; quantity?: number; unit?: string }[];
   steps?: { text: string }[];
   tags?: string[];
+}
+
+export interface ImportedIngredient {
+  name: string;
+  quantity?: number;
+  unit?: string;
+}
+
+export interface ImportedRecipe {
+  title: string;
+  description?: string;
+  servings?: number;
+  prep_time?: number;
+  cook_time?: number;
+  ingredients: ImportedIngredient[];
+  steps: string[];
+  tags: string[];
+  image_url?: string;
+  source: "json-ld" | "fallback";
+  warning?: string;
 }
 
 export interface Category {

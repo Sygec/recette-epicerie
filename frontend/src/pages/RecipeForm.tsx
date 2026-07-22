@@ -30,6 +30,12 @@ export default function RecipeForm() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [importUrl, setImportUrl] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importWarning, setImportWarning] = useState<string | null>(null);
+  const [importedImageUrl, setImportedImageUrl] = useState<string | null>(null);
+
   useEffect(() => {
     if (!isEdit) return;
     api.getRecipe(Number(id)).then((r) => {
@@ -54,6 +60,41 @@ export default function RecipeForm() {
       setSteps(r.steps.length ? r.steps.map((s) => s.text) : [""]);
     });
   }, [id, isEdit]);
+
+  async function handleImport() {
+    if (!importUrl.trim()) return;
+    setImporting(true);
+    setImportError(null);
+    setImportWarning(null);
+    try {
+      const imported = await api.importRecipe(importUrl.trim());
+      setTitle(imported.title);
+      setDescription(imported.description ?? "");
+      setServings(imported.servings?.toString() ?? "");
+      setPrepTime(imported.prep_time?.toString() ?? "");
+      setCookTime(imported.cook_time?.toString() ?? "");
+      setSourceUrl(importUrl.trim());
+      setTagsInput(imported.tags.join(", "));
+      setIngredients(
+        imported.ingredients.length
+          ? imported.ingredients.map((i) => ({
+              name: i.name,
+              quantity: i.quantity?.toString() ?? "",
+              unit: i.unit ?? "",
+            }))
+          : [{ name: "", quantity: "", unit: "" }]
+      );
+      setSteps(imported.steps.length ? imported.steps : [""]);
+      setImportedImageUrl(imported.image_url ?? null);
+      if (imported.warning) setImportWarning(imported.warning);
+    } catch (err) {
+      setImportError(
+        err instanceof Error ? err.message : "Impossible d'importer cette recette"
+      );
+    } finally {
+      setImporting(false);
+    }
+  }
 
   function updateIngredient(idx: number, field: keyof IngredientRow, value: string) {
     setIngredients((rows) =>
@@ -121,6 +162,8 @@ export default function RecipeForm() {
 
       if (photoFile) {
         await api.uploadPhoto(recipeId, photoFile);
+      } else if (importedImageUrl) {
+        await api.setPhotoFromUrl(recipeId, importedImageUrl);
       }
 
       navigate(`/recettes/${recipeId}`);
@@ -149,6 +192,43 @@ export default function RecipeForm() {
       </h1>
 
       {error && <p className="mt-3 text-sm text-brick">{error}</p>}
+
+      {!isEdit && (
+        <div className="mt-6 rounded-card border border-line bg-white/50 p-4">
+          <p className={labelClass}>Importer depuis une URL</p>
+          <div className="mt-1 flex gap-2">
+            <input
+              type="url"
+              value={importUrl}
+              onChange={(e) => setImportUrl(e.target.value)}
+              placeholder="https://exemple.com/recette"
+              className={`${rowInputClass} flex-1`}
+            />
+            <button
+              type="button"
+              onClick={handleImport}
+              disabled={importing || !importUrl.trim()}
+              className="rounded-lg border border-sage px-4 py-2 font-medium text-sage-dark hover:bg-sage/10 disabled:opacity-50"
+            >
+              {importing ? "Import…" : "Importer"}
+            </button>
+          </div>
+          <p className="mt-1.5 text-xs text-ink/50">
+            Fonctionne mieux sur les sites de recettes ; vous pourrez toujours modifier le résultat avant d'enregistrer.
+          </p>
+          {importError && <p className="mt-2 text-sm text-brick">{importError}</p>}
+          {importWarning && (
+            <p className="mt-2 text-sm text-mustard-dark">{importWarning}</p>
+          )}
+          {importedImageUrl && !photoFile && (
+            <img
+              src={importedImageUrl}
+              alt=""
+              className="mt-3 h-32 w-full rounded-lg object-cover"
+            />
+          )}
+        </div>
+      )}
 
       <label className={`${labelClass} mt-6`}>
         Titre *

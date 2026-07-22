@@ -2,6 +2,13 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Env } from "./types";
 import { generateToken, requireAuth } from "./auth";
+import {
+  extractFromHtml,
+  findRecipeInJsonLd,
+  isHttpUrl,
+  mapFallbackToRecipe,
+  mapJsonLdToRecipe,
+} from "./recipeImport";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -209,6 +216,68 @@ app.post("/api/recipes", async (c) => {
   return c.json({ id: recipeId }, 201);
 });
 
+// Fetches a page server-side and extracts recipe fields from its schema.org
+// Recipe JSON-LD (what recipe sites publish for Google's rich-snippet
+// eligibility, so it's reliable even on JS-heavy sites), falling back to
+// Open Graph tags (title/description/image only) when no structured recipe
+// data is found. Returns a preview for the client to review/edit — nothing
+// is saved here, including the image (still an external URL at this point;
+// see /api/recipes/:id/photo-from-url for the actual download-to-R2 step,
+// which only happens once the recipe is actually saved).
+app.post("/api/recipes/import", async (c) => {
+  const { url } = await c.req.json<{ url?: string }>();
+
+  if (!url || !isHttpUrl(url)) {
+    return c.json({ error: "URL invalide (http ou https requis)" }, 400);
+  }
+
+  let pageResponse: Response;
+  try {
+    pageResponse = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (compatible; RecettesEtCoursesBot/1.0; +recette-epicerie)",
+        Accept: "text/html",
+      },
+      redirect: "follow",
+    });
+  } catch {
+    return c.json({ error: "Impossible de joindre cette page" }, 400);
+  }
+
+  if (!pageResponse.ok) {
+    return c.json(
+      { error: `La page a répondu avec une erreur (${pageResponse.status})` },
+      400
+    );
+  }
+  const contentType = pageResponse.headers.get("content-type") ?? "";
+  if (!contentType.includes("text/html")) {
+    return c.json({ error: "Cette URL ne semble pas être une page web" }, 400);
+  }
+
+  const extracted = await extractFromHtml(pageResponse);
+  const recipeNode = findRecipeInJsonLd(extracted.jsonLdBlocks);
+
+  if (recipeNode) {
+    return c.json(mapJsonLdToRecipe(recipeNode));
+  }
+
+  const fallback = mapFallbackToRecipe(extracted);
+  if (fallback) {
+    return c.json({
+      ...fallback,
+      warning:
+        "Aucune donnée de recette structurée trouvée sur cette page — seuls le titre, la description et la photo ont pu être importés. Ajoutez les ingrédients et les étapes manuellement.",
+    });
+  }
+
+  return c.json(
+    { error: "Impossible d'extraire une recette de cette page. Essayez la saisie manuelle." },
+    422
+  );
+});
+
 app.put("/api/recipes/:id", async (c) => {
   const id = c.req.param("id");
   const body = await c.req.json<RecipePayload>();
@@ -291,6 +360,50 @@ app.post("/api/recipes/:id/photo", async (c) => {
   const key = `recipes/${id}/${Date.now()}-${file.name}`;
   await c.env.PHOTOS.put(key, await file.arrayBuffer(), {
     httpMetadata: { contentType: file.type },
+  });
+
+  const photoUrl = `/photos/${key}`;
+  await c.env.DB.prepare("UPDATE recipes SET photo_url = ? WHERE id = ?")
+    .bind(photoUrl, id)
+    .run();
+
+  return c.json({ photo_url: photoUrl });
+});
+
+// Downloads an image from a URL server-side and stores it in R2, for the
+// "photo imported from a recipe URL" flow — the client never handles the
+// image bytes directly, and the same content-type allowlist used for direct
+// uploads applies here too (the source page's claimed content-type can't be
+// trusted any more than a client upload's can).
+app.post("/api/recipes/:id/photo-from-url", async (c) => {
+  const id = c.req.param("id");
+  const { url } = await c.req.json<{ url?: string }>();
+
+  if (!url || !isHttpUrl(url)) {
+    return c.json({ error: "URL invalide (http ou https requis)" }, 400);
+  }
+
+  let imgResponse: Response;
+  try {
+    imgResponse = await fetch(url);
+  } catch {
+    return c.json({ error: "Impossible de télécharger cette image" }, 400);
+  }
+  if (!imgResponse.ok) {
+    return c.json({ error: "Impossible de télécharger cette image" }, 400);
+  }
+
+  const contentType = imgResponse.headers.get("content-type") ?? "";
+  if (!ALLOWED_PHOTO_TYPES.has(contentType)) {
+    return c.json(
+      { error: "Format d'image non pris en charge (JPEG, PNG, WEBP ou GIF requis)" },
+      400
+    );
+  }
+
+  const key = `recipes/${id}/${Date.now()}-imported`;
+  await c.env.PHOTOS.put(key, await imgResponse.arrayBuffer(), {
+    httpMetadata: { contentType },
   });
 
   const photoUrl = `/photos/${key}`;
