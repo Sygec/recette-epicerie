@@ -310,11 +310,17 @@ function stripLeadingConnector(text: string): string {
 
 // Careful baking sites routinely append a weight/metric conversion right
 // after the unit — "2 cups (250g) flour", "1/2 cup (8 Tbsp; 113g) butter" —
-// which otherwise ends up glued onto the front of the name. Only strip a
-// LEADING parenthetical (right after the unit), not one appearing later in
-// the name ("walnuts (or pecans)" should keep its parenthetical).
-function stripLeadingParenthetical(text: string): string {
-  return text.replace(/^\([^)]*\)\s*/, "").trim();
+// which otherwise ends up glued onto the front of the name. That conversion
+// is real information (gram weights are often more precise than cup
+// measurements for baking), so it's moved to the end rather than discarded:
+// "2 cups (250g) flour" -> "flour (250g)". Only a LEADING parenthetical is
+// touched — one appearing later in the name ("walnuts (or pecans)") is left
+// exactly where it is.
+function moveLeadingParentheticalToEnd(text: string): string {
+  const match = text.match(/^\(([^)]*)\)\s*(.*)$/);
+  if (!match) return text;
+  const [, paren, rest] = match;
+  return rest ? `${rest} (${paren})` : `(${paren})`;
 }
 
 const UNICODE_FRACTIONS: Record<string, number> = {
@@ -389,7 +395,7 @@ export function splitIngredientLine(line: string): ImportedIngredient {
   for (const phrase of MULTI_WORD_UNITS) {
     if (lowerRest.startsWith(phrase)) {
       const name = stripLeadingConnector(
-        stripLeadingParenthetical(rest.slice(phrase.length))
+        moveLeadingParentheticalToEnd(rest.slice(phrase.length))
       );
       return { name: name || rest, quantity, unit: rest.slice(0, phrase.length) };
     }
@@ -397,10 +403,10 @@ export function splitIngredientLine(line: string): ImportedIngredient {
 
   const restMatch = rest.match(/^(\S+)\s+(.*)$/);
   if (restMatch && KNOWN_UNITS.has(restMatch[1].toLowerCase().replace(/\.$/, ""))) {
-    const name = stripLeadingConnector(stripLeadingParenthetical(restMatch[2]));
+    const name = stripLeadingConnector(moveLeadingParentheticalToEnd(restMatch[2]));
     return { name: name || restMatch[2], quantity, unit: restMatch[1] };
   }
-  return { name: stripLeadingParenthetical(rest) || rest, quantity };
+  return { name: moveLeadingParentheticalToEnd(rest) || rest, quantity };
 }
 
 // ---------------------------------------------------------------------------
