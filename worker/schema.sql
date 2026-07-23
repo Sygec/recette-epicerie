@@ -227,7 +227,8 @@ INSERT INTO food_dictionary (id, canonical_name, category_id) VALUES
   (68, 'thé',                   13),
   (69, 'jus',                   13),
   (70, 'eau',                   13),
-  (71, 'vin',                   13)
+  (71, 'vin',                   13),
+  (72, 'coriandre',             9)
 ON CONFLICT(id) DO NOTHING;
 
 INSERT INTO food_aliases (food_id, alias, lang) VALUES
@@ -301,5 +302,6 @@ INSERT INTO food_aliases (food_id, alias, lang) VALUES
   (68, 'thé', 'fr'), (68, 'tea', 'en'),
   (69, 'jus', 'fr'), (69, 'juice', 'en'),
   (70, 'eau', 'fr'), (70, 'water', 'en'),
-  (71, 'vin', 'fr'), (71, 'wine', 'en')
+  (71, 'vin', 'fr'), (71, 'wine', 'en'),
+  (72, 'coriandre', 'fr'), (72, 'coriandre moulue', 'fr'), (72, 'coriander', 'en'), (72, 'ground coriander', 'en')
 ON CONFLICT(alias) DO NOTHING;

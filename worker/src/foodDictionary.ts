@@ -28,6 +28,18 @@ export interface FoodMatch {
   category_id: number | null;
 }
 
+// "c. à thé" / "cuillère à café" are common French phrasings for teaspoon —
+// literally "spoon at tea/coffee" — a holdover from teaspoons historically
+// being for tea. Ingredient names often carry one of these as a size
+// conversion ("coriandre moulue (2 c. à thé)"), which otherwise
+// false-matches against the beverage entries "thé"/"café" — "thé" there is
+// a properly word-bounded token, not a substring-inside-another-word case,
+// so the normal boundary check doesn't catch it. Excluded whenever
+// immediately preceded by "à ", since that combination is essentially
+// always a unit/container reference (cuillère/tasse/verre à thé|café),
+// never a direct purchase of the beverage itself.
+const UNIT_IDIOM_EXCLUSIONS = new Set(["thé", "café"]);
+
 // Matches as a whole word/phrase within the given text, not as a substring
 // of some unrelated longer word ("sel" must not match inside "conseil").
 // When multiple aliases match, the longest wins — so a specific compound
@@ -40,7 +52,11 @@ export function matchFood(text: string, aliasRows: AliasRow[]): FoodMatch | null
   for (const row of aliasRows) {
     const aliasNorm = normalizeFoodText(row.alias);
     const boundary = "[^a-zà-ÿ]";
-    const pattern = new RegExp(`(^|${boundary})${escapeRegExp(aliasNorm)}(${boundary}|$)`, "i");
+    const exclude = UNIT_IDIOM_EXCLUSIONS.has(aliasNorm) ? "(?<!à )" : "";
+    const pattern = new RegExp(
+      `(^|${boundary})${exclude}${escapeRegExp(aliasNorm)}(${boundary}|$)`,
+      "i"
+    );
     if (pattern.test(normalized) && (!best || aliasNorm.length > normalizeFoodText(best.alias).length)) {
       best = row;
     }
