@@ -9,7 +9,7 @@ import {
   mapFallbackToRecipe,
   mapJsonLdToRecipe,
 } from "./recipeImport";
-import { loadAliasRows, matchFood, normalizeFoodText, unitsMatch } from "./foodDictionary";
+import { findMergeTarget, loadAliasRows, matchFood, normalizeFoodText } from "./foodDictionary";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -608,9 +608,9 @@ app.post("/api/grocery-items", async (c) => {
   const foodId = match?.food_id ?? null;
   const categoryId = body.category_id ?? match?.category_id ?? null;
 
-  // Unit comparison happens in code, not SQL, so it can treat true synonyms
-  // ("boîte"/"can", singular/plural) as equal without attempting real unit
-  // conversion — see unitsMatch().
+  // Unit reconciliation happens in code, not SQL: an exact/synonym match is
+  // tried first, then real conversion (volume<->volume or weight<->weight
+  // only) — see findMergeTarget().
   const candidates = foodId
     ? await c.env.DB.prepare(
         `SELECT id, quantity, unit FROM grocery_items
@@ -626,17 +626,13 @@ app.post("/api/grocery-items", async (c) => {
         .bind(listId, normalizeFoodText(body.name))
         .all<{ id: number; quantity: number | null; unit: string | null }>();
 
-  const existing = candidates.results.find((row) => unitsMatch(row.unit, unit));
+  const target = findMergeTarget(candidates.results, body.quantity ?? null, unit);
 
-  if (existing) {
-    const mergedQuantity =
-      body.quantity != null && existing.quantity != null
-        ? existing.quantity + body.quantity
-        : (existing.quantity ?? body.quantity ?? null);
+  if (target) {
     await c.env.DB.prepare("UPDATE grocery_items SET quantity = ? WHERE id = ?")
-      .bind(mergedQuantity, existing.id)
+      .bind(target.mergedQuantity, target.row.id)
       .run();
-    return c.json({ id: existing.id }, 200);
+    return c.json({ id: target.row.id }, 200);
   }
 
   const result = await c.env.DB.prepare(

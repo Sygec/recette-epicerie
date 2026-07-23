@@ -90,7 +90,10 @@ function canonicalUnit(unit: string): string {
   const normalized = normalizeFoodText(unit);
   // Cheap plural fold for units not covered by the synonym groups above
   // (tablespoon/tablespoons, teaspoon/teaspoons, gram/grams...). Guarded by
-  // length so short non-plural units (oz, cs) aren't mangled.
+  // length so short non-plural units (oz, cs) aren't mangled. Only reaches
+  // the last word of a phrase, which is why the multi-word volume table
+  // below lists French plural forms ("cuillères à soupe") explicitly rather
+  // than relying on this fold.
   const singularish =
     normalized.endsWith("s") && normalized.length > 3
       ? normalized.slice(0, -1)
@@ -107,6 +110,118 @@ export function unitsMatch(a: string | null, b: string | null): boolean {
   if (a == null && b == null) return true;
   if (a == null || b == null) return false;
   return canonicalUnit(a) === canonicalUnit(b);
+}
+
+// Real unit conversion, scoped to two dimensions only: volume and weight.
+// Never crosses dimensions (a volume never converts to a weight — that
+// needs the ingredient's density, which isn't tracked), and never touches a
+// bare count ("2 onions" vs "300 g" always stays as two lines, correctly —
+// they aren't the same kind of quantity). This is what actually lets a
+// French source's "45 ml (3 c. à soupe)" merge with an English source's
+// "3 tablespoons (45 ml)" for the same ingredient, where the two round-trip
+// to the exact same real amount just expressed differently.
+const VOLUME_TO_ML: Record<string, number> = {
+  ml: 1,
+  millilitre: 1,
+  cl: 10,
+  centilitre: 10,
+  l: 1000,
+  litre: 1000,
+  liter: 1000,
+  teaspoon: 5,
+  tsp: 5,
+  "c. à thé": 5,
+  "cuillère à thé": 5,
+  "cuillères à thé": 5,
+  "c. à café": 5,
+  "cuillère à café": 5,
+  "cuillères à café": 5,
+  tablespoon: 15,
+  tbsp: 15,
+  "c. à soupe": 15,
+  "cuillère à soupe": 15,
+  "cuillères à soupe": 15,
+  cup: 240,
+  tasse: 240,
+};
+
+// Bare "oz" defaults to weight (the more common meaning); fluid ounces need
+// to say so explicitly.
+const WEIGHT_TO_G: Record<string, number> = {
+  g: 1,
+  gram: 1,
+  gramme: 1,
+  kg: 1000,
+  kilogram: 1000,
+  kilogramme: 1000,
+  oz: 28.3495,
+  ounce: 28.3495,
+  lb: 453.592,
+  lbs: 453.592,
+  pound: 453.592,
+};
+
+// Re-expresses `quantity` (in `fromUnit`) as an equivalent quantity in
+// `toUnit`, if both units belong to the same dimension (both volume, or
+// both weight). Identical or synonym units (e.g. "cup"/"tasse") return the
+// quantity unchanged. Returns undefined if the units aren't in the same
+// dimension, or aren't recognized at all.
+export function convertForMerge(
+  quantity: number,
+  fromUnit: string,
+  toUnit: string
+): number | undefined {
+  const from = canonicalUnit(fromUnit);
+  const to = canonicalUnit(toUnit);
+  if (from === to) return quantity;
+
+  const fromMl = VOLUME_TO_ML[from];
+  const toMl = VOLUME_TO_ML[to];
+  if (fromMl !== undefined && toMl !== undefined) return (quantity * fromMl) / toMl;
+
+  const fromG = WEIGHT_TO_G[from];
+  const toG = WEIGHT_TO_G[to];
+  if (fromG !== undefined && toG !== undefined) return (quantity * fromG) / toG;
+
+  return undefined;
+}
+
+interface GroceryRowLike {
+  quantity: number | null;
+  unit: string | null;
+}
+
+// Finds which existing grocery-list row (if any) the incoming quantity
+// should merge into, and what the resulting quantity should be. Tries an
+// exact/synonym unit match first (no rounding involved) before falling back
+// to unit conversion, so "45 ml" prefers merging with an existing "45 ml"
+// row over converting into a "3 tablespoons" row if both happen to exist.
+export function findMergeTarget<T extends GroceryRowLike>(
+  candidates: T[],
+  incomingQuantity: number | null,
+  incomingUnit: string | null
+): { row: T; mergedQuantity: number | null } | undefined {
+  for (const row of candidates) {
+    if (unitsMatch(row.unit, incomingUnit)) {
+      const mergedQuantity =
+        incomingQuantity != null && row.quantity != null
+          ? row.quantity + incomingQuantity
+          : (row.quantity ?? incomingQuantity ?? null);
+      return { row, mergedQuantity };
+    }
+  }
+
+  if (incomingQuantity != null && incomingUnit != null) {
+    for (const row of candidates) {
+      if (row.unit == null || row.quantity == null) continue;
+      const converted = convertForMerge(incomingQuantity, incomingUnit, row.unit);
+      if (converted !== undefined) {
+        return { row, mergedQuantity: Math.round((row.quantity + converted) * 100) / 100 };
+      }
+    }
+  }
+
+  return undefined;
 }
 
 export async function loadAliasRows(db: D1Database): Promise<AliasRow[]> {
