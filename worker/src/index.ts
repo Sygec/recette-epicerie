@@ -9,7 +9,13 @@ import {
   mapFallbackToRecipe,
   mapJsonLdToRecipe,
 } from "./recipeImport";
-import { findMergeTarget, loadAliasRows, matchFood, normalizeFoodText } from "./foodDictionary";
+import {
+  findMergeTarget,
+  loadAliasRows,
+  matchFood,
+  normalizeFoodText,
+  updateNameConversionNote,
+} from "./foodDictionary";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -613,24 +619,33 @@ app.post("/api/grocery-items", async (c) => {
   // only) — see findMergeTarget().
   const candidates = foodId
     ? await c.env.DB.prepare(
-        `SELECT id, quantity, unit FROM grocery_items
+        `SELECT id, name, quantity, unit FROM grocery_items
          WHERE list_id = ? AND food_id = ? AND is_checked = 0`
       )
         .bind(listId, foodId)
-        .all<{ id: number; quantity: number | null; unit: string | null }>()
+        .all<{ id: number; name: string; quantity: number | null; unit: string | null }>()
     : await c.env.DB.prepare(
-        `SELECT id, quantity, unit FROM grocery_items
+        `SELECT id, name, quantity, unit FROM grocery_items
          WHERE list_id = ? AND food_id IS NULL AND is_checked = 0
            AND lower(trim(name)) = ?`
       )
         .bind(listId, normalizeFoodText(body.name))
-        .all<{ id: number; quantity: number | null; unit: string | null }>();
+        .all<{ id: number; name: string; quantity: number | null; unit: string | null }>();
 
   const target = findMergeTarget(candidates.results, body.quantity ?? null, unit);
 
   if (target) {
-    await c.env.DB.prepare("UPDATE grocery_items SET quantity = ? WHERE id = ?")
-      .bind(target.mergedQuantity, target.row.id)
+    // The target's own unit doesn't change on a merge (only the quantity
+    // does), but a trailing size-conversion note baked into its name at
+    // import time — e.g. "poudre de chili (1/4 tasse)" — described the
+    // pre-merge quantity and needs recomputing so it doesn't go stale.
+    const updatedName = updateNameConversionNote(
+      target.row.name,
+      target.row.unit,
+      target.mergedQuantity
+    );
+    await c.env.DB.prepare("UPDATE grocery_items SET quantity = ?, name = ? WHERE id = ?")
+      .bind(target.mergedQuantity, updatedName, target.row.id)
       .run();
     return c.json({ id: target.row.id }, 200);
   }

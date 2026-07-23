@@ -365,7 +365,7 @@ const UNICODE_FRACTION_CHARS = Object.keys(UNICODE_FRACTIONS).join("");
 // simpler shape (e.g. the "3" in "3/4") never wins over the shape that
 // actually describes the whole quantity. Returns the parsed value and
 // however much of the leading text it consumed.
-function parseLeadingQuantity(
+export function parseLeadingQuantity(
   text: string
 ): { value: number; consumed: number } | undefined {
   // "1 and 3/4" — a mixed number spelled out with "and", common in US baking

@@ -9,6 +9,8 @@
 // provided is always what's displayed; the dictionary only informs
 // categorization and merge-matching.
 
+import { parseLeadingQuantity } from "./recipeImport";
+
 export function normalizeFoodText(text: string): string {
   return text.toLowerCase().trim().replace(/\s+/g, " ");
 }
@@ -184,6 +186,39 @@ export function convertForMerge(
   if (fromG !== undefined && toG !== undefined) return (quantity * fromG) / toG;
 
   return undefined;
+}
+
+// The ingredient-import pipeline appends a trailing "(<number> <unit>)"
+// conversion note to a name when a size/weight conversion precedes the real
+// ingredient name in the source text — e.g. "poudre de chili (1/4 tasse)".
+// That note describes the ORIGINAL quantity; once a merge changes the row's
+// quantity, the note goes stale (still "1/4 tasse" after the row is really
+// "1/2 tasse" worth). Recomputes it when the note cleanly parses as just a
+// number + a unit in the same dimension as the row's primary unit; leaves
+// the name untouched otherwise (multi-part notes like "(8 Tbsp; 113g)", or
+// free-text asides like "(or pecans)") rather than risk mangling something
+// that isn't actually a stale conversion.
+export function updateNameConversionNote(
+  name: string,
+  primaryUnit: string | null,
+  newQuantity: number | null
+): string {
+  if (primaryUnit == null || newQuantity == null) return name;
+
+  const match = name.match(/^(.*)\s\(([^)]+)\)$/);
+  if (!match) return name;
+  const [, core, noteContent] = match;
+
+  const parsed = parseLeadingQuantity(noteContent);
+  if (!parsed) return name;
+  const noteUnit = noteContent.slice(parsed.consumed).trim();
+  if (!noteUnit) return name; // no unit word after the number — not a "<qty> <unit>" note
+
+  const converted = convertForMerge(newQuantity, primaryUnit, noteUnit);
+  if (converted === undefined) return name; // different dimension, or an unrecognized unit
+
+  const rounded = Math.round(converted * 100) / 100;
+  return `${core} (${rounded} ${noteUnit})`;
 }
 
 interface GroceryRowLike {
