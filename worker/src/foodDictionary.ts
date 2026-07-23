@@ -15,6 +15,23 @@ export function normalizeFoodText(text: string): string {
   return text.toLowerCase().trim().replace(/\s+/g, " ");
 }
 
+// Strips accents ("é" -> "e", "ç" -> "c"...) via Unicode decomposition. Only
+// used for FOOD-NAME identity matching (matchFood, and the plain-name
+// fallback merge in index.ts) — never for unit text, since the unit tables
+// below are keyed on accented French phrasings ("c. à soupe") and folding
+// there would break them.
+function foldAccents(text: string): string {
+  return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+// A food name's identity for matching purposes: same word regardless of
+// case, extra whitespace, or accents — "boeuf haché" and "boeuf hache" (a
+// common accent-dropping typo, especially on non-French keyboards) should be
+// recognized as the same ingredient.
+export function normalizeFoodIdentity(text: string): string {
+  return foldAccents(normalizeFoodText(text));
+}
+
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -40,27 +57,35 @@ export interface FoodMatch {
 // immediately preceded by "à ", since that combination is essentially
 // always a unit/container reference (cuillère/tasse/verre à thé|café),
 // never a direct purchase of the beverage itself.
-const UNIT_IDIOM_EXCLUSIONS = new Set(["thé", "café"]);
+// Folded forms (accents stripped) since the matching below compares against
+// accent-folded text — see normalizeFoodIdentity.
+const UNIT_IDIOM_EXCLUSIONS = new Set(["the", "cafe"]);
 
 // Matches as a whole word/phrase within the given text, not as a substring
 // of some unrelated longer word ("sel" must not match inside "conseil").
-// When multiple aliases match, the longest wins — so a specific compound
-// alias like "crème sure" is preferred over the shorter "crème" for
+// Accent-insensitive, so "boeuf hache" (a common accent-dropping typo)
+// still matches the "boeuf haché" alias. When multiple aliases match, the
+// longest wins — so a specific compound alias like "crème sure" is
+// preferred over the shorter "crème" for
 // "1 tasse de crème sure, à température ambiante".
 export function matchFood(text: string, aliasRows: AliasRow[]): FoodMatch | null {
-  const normalized = normalizeFoodText(text);
+  const normalized = normalizeFoodIdentity(text);
   let best: AliasRow | null = null;
+  let bestAliasIdentity = "";
 
   for (const row of aliasRows) {
-    const aliasNorm = normalizeFoodText(row.alias);
-    const boundary = "[^a-zà-ÿ]";
-    const exclude = UNIT_IDIOM_EXCLUSIONS.has(aliasNorm) ? "(?<!à )" : "";
+    const aliasIdentity = normalizeFoodIdentity(row.alias);
+    const boundary = "[^a-z]";
+    // Folding turns "à " into "a " too, so the exclusion lookbehind must
+    // match the folded form.
+    const exclude = UNIT_IDIOM_EXCLUSIONS.has(aliasIdentity) ? "(?<!a )" : "";
     const pattern = new RegExp(
-      `(^|${boundary})${exclude}${escapeRegExp(aliasNorm)}(${boundary}|$)`,
+      `(^|${boundary})${exclude}${escapeRegExp(aliasIdentity)}(${boundary}|$)`,
       "i"
     );
-    if (pattern.test(normalized) && (!best || aliasNorm.length > normalizeFoodText(best.alias).length)) {
+    if (pattern.test(normalized) && (!best || aliasIdentity.length > bestAliasIdentity.length)) {
       best = row;
+      bestAliasIdentity = aliasIdentity;
     }
   }
 

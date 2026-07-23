@@ -13,7 +13,7 @@ import {
   findMergeTarget,
   loadAliasRows,
   matchFood,
-  normalizeFoodText,
+  normalizeFoodIdentity,
   updateNameConversionNote,
 } from "./foodDictionary";
 
@@ -624,13 +624,22 @@ app.post("/api/grocery-items", async (c) => {
       )
         .bind(listId, foodId)
         .all<{ id: number; name: string; quantity: number | null; unit: string | null }>()
-    : await c.env.DB.prepare(
-        `SELECT id, name, quantity, unit FROM grocery_items
-         WHERE list_id = ? AND food_id IS NULL AND is_checked = 0
-           AND lower(trim(name)) = ?`
-      )
-        .bind(listId, normalizeFoodText(body.name))
-        .all<{ id: number; name: string; quantity: number | null; unit: string | null }>();
+    : await (async () => {
+        // No dictionary match — fall back to comparing names directly.
+        // Filtered in JS (not SQL) so the comparison can be accent-
+        // insensitive, same as the dictionary match above (SQLite's lower()
+        // doesn't fold accents).
+        const { results } = await c.env.DB.prepare(
+          `SELECT id, name, quantity, unit FROM grocery_items
+           WHERE list_id = ? AND food_id IS NULL AND is_checked = 0`
+        )
+          .bind(listId)
+          .all<{ id: number; name: string; quantity: number | null; unit: string | null }>();
+        const identity = normalizeFoodIdentity(body.name);
+        return {
+          results: results.filter((row) => normalizeFoodIdentity(row.name) === identity),
+        };
+      })();
 
   const target = findMergeTarget(candidates.results, body.quantity ?? null, unit);
 
