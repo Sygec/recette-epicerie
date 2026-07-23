@@ -9,6 +9,7 @@ import {
   mapFallbackToRecipe,
   mapJsonLdToRecipe,
 } from "./recipeImport";
+import { loadAliasRows, matchFood, normalizeFoodText } from "./foodDictionary";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -511,6 +512,15 @@ interface GroceryItemPayload {
   recipe_id?: number;
 }
 
+// Cross-language recognition + merge (Phase 2): the item's free-text name is
+// matched against the food dictionary to find its aisle category (unless one
+// was already given explicitly) and its canonical food identity. If an
+// unchecked line for the same food (or, lacking a dictionary match, the
+// exact same name) already exists in the same unit, the quantities are
+// summed into that line instead of creating a duplicate — matching units
+// merge, mismatched units are listed separately. The item's displayed name
+// is never rewritten by this; the dictionary only drives categorization and
+// merge-matching.
 app.post("/api/grocery-items", async (c) => {
   const listId = await getOrCreateDefaultList(c.env);
   const body = await c.req.json<GroceryItemPayload>();
@@ -519,17 +529,52 @@ app.post("/api/grocery-items", async (c) => {
     return c.json({ error: "Le nom de l'article est obligatoire" }, 400);
   }
 
+  const unit = body.unit ?? null;
+  const aliasRows = await loadAliasRows(c.env.DB);
+  const match = matchFood(body.name, aliasRows);
+  const foodId = match?.food_id ?? null;
+  const categoryId = body.category_id ?? match?.category_id ?? null;
+
+  const existing = foodId
+    ? await c.env.DB.prepare(
+        `SELECT id, quantity FROM grocery_items
+         WHERE list_id = ? AND food_id = ? AND is_checked = 0
+           AND ((? IS NULL AND unit IS NULL) OR lower(trim(unit)) = lower(trim(?)))`
+      )
+        .bind(listId, foodId, unit, unit)
+        .first<{ id: number; quantity: number | null }>()
+    : await c.env.DB.prepare(
+        `SELECT id, quantity FROM grocery_items
+         WHERE list_id = ? AND food_id IS NULL AND is_checked = 0
+           AND lower(trim(name)) = ?
+           AND ((? IS NULL AND unit IS NULL) OR lower(trim(unit)) = lower(trim(?)))`
+      )
+        .bind(listId, normalizeFoodText(body.name), unit, unit)
+        .first<{ id: number; quantity: number | null }>();
+
+  if (existing) {
+    const mergedQuantity =
+      body.quantity != null && existing.quantity != null
+        ? existing.quantity + body.quantity
+        : (existing.quantity ?? body.quantity ?? null);
+    await c.env.DB.prepare("UPDATE grocery_items SET quantity = ? WHERE id = ?")
+      .bind(mergedQuantity, existing.id)
+      .run();
+    return c.json({ id: existing.id }, 200);
+  }
+
   const result = await c.env.DB.prepare(
-    `INSERT INTO grocery_items (list_id, name, quantity, unit, category_id, recipe_id)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT INTO grocery_items (list_id, name, quantity, unit, category_id, recipe_id, food_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       listId,
       body.name,
       body.quantity ?? null,
-      body.unit ?? null,
-      body.category_id ?? null,
-      body.recipe_id ?? null
+      unit,
+      categoryId,
+      body.recipe_id ?? null,
+      foodId
     )
     .run();
 
