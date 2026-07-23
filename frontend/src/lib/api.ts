@@ -107,6 +107,21 @@ export const api = {
 
   getCategories: () => request<Category[]>("/api/categories"),
 
+  createCategory: (name: string) =>
+    request<{ id: number }>("/api/categories", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+
+  renameCategory: (id: number, name: string) =>
+    request<{ ok: true }>(`/api/categories/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ name }),
+    }),
+
+  deleteCategory: (id: number) =>
+    request<{ ok: true }>(`/api/categories/${id}`, { method: "DELETE" }),
+
   getGroceryItems: () => request<GroceryItem[]>("/api/grocery-items"),
 
   addGroceryItem: (payload: {
@@ -221,6 +236,7 @@ export interface GroceryItem {
   unit: string | null;
   category_id: number | null;
   category_name: string | null;
+  category_is_custom: number | null;
   recipe_id: number | null;
   is_checked: number;
 }

@@ -1,18 +1,34 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, GroceryItem } from "../lib/api";
+import { api, Category, GroceryItem } from "../lib/api";
+
+interface CategoryGroup {
+  categoryId: number | null;
+  categoryName: string;
+  isCustom: boolean;
+  items: GroceryItem[];
+}
 
 export default function GroceryList() {
   const [items, setItems] = useState<GroceryItem[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [newItemName, setNewItemName] = useState("");
+  const [newItemCategoryId, setNewItemCategoryId] = useState("");
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [addingCategory, setAddingCategory] = useState(false);
+  const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
+  const [editingCategoryName, setEditingCategoryName] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   function refresh() {
     return api.getGroceryItems().then(setItems);
   }
+  function refreshCategories() {
+    return api.getCategories().then(setCategories);
+  }
 
   useEffect(() => {
-    refresh().finally(() => setLoading(false));
+    Promise.all([refresh(), refreshCategories()]).finally(() => setLoading(false));
   }, []);
 
   async function handleAdd(e: React.FormEvent) {
@@ -20,8 +36,12 @@ export default function GroceryList() {
     if (!newItemName.trim()) return;
     setError(null);
     try {
-      await api.addGroceryItem({ name: newItemName.trim() });
+      await api.addGroceryItem({
+        name: newItemName.trim(),
+        category_id: newItemCategoryId ? Number(newItemCategoryId) : undefined,
+      });
       setNewItemName("");
+      setNewItemCategoryId("");
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Impossible d'ajouter l'article");
@@ -58,32 +78,123 @@ export default function GroceryList() {
     }
   }
 
-  const grouped = useMemo(() => {
-    const groups = new Map<string, GroceryItem[]>();
-    for (const item of items) {
-      const key = item.category_name ?? "Autres / Non classé";
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key)!.push(item);
+  async function handleAddCategory(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newCategoryName.trim()) return;
+    setError(null);
+    setAddingCategory(true);
+    try {
+      await api.createCategory(newCategoryName.trim());
+      setNewCategoryName("");
+      await refreshCategories();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Impossible de créer la catégorie");
+    } finally {
+      setAddingCategory(false);
     }
-    return groups;
+  }
+
+  function startEditingCategory(group: CategoryGroup) {
+    if (group.categoryId == null) return;
+    setEditingCategoryId(group.categoryId);
+    setEditingCategoryName(group.categoryName);
+  }
+
+  async function saveEditingCategory() {
+    const id = editingCategoryId;
+    const name = editingCategoryName.trim();
+    setEditingCategoryId(null);
+    if (id == null || !name) return;
+    setError(null);
+    try {
+      await api.renameCategory(id, name);
+      await Promise.all([refresh(), refreshCategories()]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Impossible de renommer la catégorie");
+    }
+  }
+
+  async function handleDeleteCategory(id: number) {
+    if (
+      !confirm(
+        "Supprimer cette catégorie ? Les articles seront déplacés vers « Autres / Non classé »."
+      )
+    )
+      return;
+    setError(null);
+    try {
+      await api.deleteCategory(id);
+      await Promise.all([refresh(), refreshCategories()]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Impossible de supprimer la catégorie");
+    }
+  }
+
+  const grouped = useMemo(() => {
+    const groups = new Map<string, CategoryGroup>();
+    for (const item of items) {
+      const key = item.category_id != null ? String(item.category_id) : "none";
+      if (!groups.has(key)) {
+        groups.set(key, {
+          categoryId: item.category_id,
+          categoryName: item.category_name ?? "Autres / Non classé",
+          isCustom: !!item.category_is_custom,
+          items: [],
+        });
+      }
+      groups.get(key)!.items.push(item);
+    }
+    return Array.from(groups.values());
   }, [items]);
 
   return (
     <div className="mx-auto max-w-2xl px-4 pb-24 pt-6 sm:pt-8">
       <h1 className="font-display text-3xl text-sage-dark">Liste de courses</h1>
 
-      <form onSubmit={handleAdd} className="mt-4 flex gap-2">
+      <form onSubmit={handleAdd} className="mt-4 flex flex-wrap gap-2">
         <input
           value={newItemName}
           onChange={(e) => setNewItemName(e.target.value)}
           placeholder="Ajouter un article…"
-          className="flex-1 rounded-lg border border-line bg-white px-3 py-2.5 focus:border-sage focus:outline-none"
+          className="min-w-0 flex-1 rounded-lg border border-line bg-white px-3 py-2.5 focus:border-sage focus:outline-none"
         />
+        <select
+          value={newItemCategoryId}
+          onChange={(e) => setNewItemCategoryId(e.target.value)}
+          aria-label="Catégorie"
+          className="rounded-lg border border-line bg-white px-2 py-2.5 text-sm text-ink/70 focus:border-sage focus:outline-none"
+        >
+          <option value="">Catégorie (auto)</option>
+          {categories
+            .slice()
+            .sort((a, b) => a.default_sort_order - b.default_sort_order)
+            .map((cat) => (
+              <option key={cat.id} value={cat.id}>
+                {cat.name}
+              </option>
+            ))}
+        </select>
         <button
           type="submit"
           className="rounded-lg bg-sage px-4 py-2.5 font-medium text-white hover:bg-sage-dark"
         >
           Ajouter
+        </button>
+      </form>
+
+      <form onSubmit={handleAddCategory} className="mt-2 flex gap-2">
+        <input
+          value={newCategoryName}
+          onChange={(e) => setNewCategoryName(e.target.value)}
+          placeholder="Nouvelle catégorie…"
+          className="min-w-0 flex-1 rounded-lg border border-line bg-white/60 px-3 py-1.5 text-sm focus:border-sage focus:outline-none"
+        />
+        <button
+          type="submit"
+          disabled={addingCategory || !newCategoryName.trim()}
+          className="rounded-lg border border-sage px-3 py-1.5 text-sm font-medium text-sage-dark hover:bg-sage/10 disabled:opacity-50"
+        >
+          + Catégorie
         </button>
       </form>
 
@@ -100,13 +211,44 @@ export default function GroceryList() {
         </div>
       ) : (
         <div className="mt-6 space-y-6">
-          {Array.from(grouped.entries()).map(([category, rows]) => (
-            <section key={category}>
-              <h2 className="text-xs font-semibold uppercase tracking-wide text-sage-dark/70">
-                {category}
-              </h2>
+          {grouped.map((group) => (
+            <section key={group.categoryId ?? "none"}>
+              <div className="flex items-center gap-2">
+                {editingCategoryId === group.categoryId && group.categoryId != null ? (
+                  <input
+                    autoFocus
+                    value={editingCategoryName}
+                    onChange={(e) => setEditingCategoryName(e.target.value)}
+                    onBlur={saveEditingCategory}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") e.currentTarget.blur();
+                      if (e.key === "Escape") setEditingCategoryId(null);
+                    }}
+                    className="rounded border border-sage bg-white px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wide text-sage-dark focus:outline-none"
+                  />
+                ) : (
+                  <h2
+                    onClick={() => startEditingCategory(group)}
+                    className={`text-xs font-semibold uppercase tracking-wide text-sage-dark/70 ${
+                      group.categoryId != null ? "cursor-pointer hover:text-sage-dark" : ""
+                    }`}
+                    title={group.categoryId != null ? "Cliquer pour renommer" : undefined}
+                  >
+                    {group.categoryName}
+                  </h2>
+                )}
+                {group.isCustom && group.categoryId != null && (
+                  <button
+                    onClick={() => handleDeleteCategory(group.categoryId!)}
+                    aria-label="Supprimer la catégorie"
+                    className="text-ink/30 hover:text-brick"
+                  >
+                    <span className="text-xs">✕</span>
+                  </button>
+                )}
+              </div>
               <ul className="mt-2 divide-y divide-line rounded-card border border-line bg-white/60">
-                {rows.map((item) => (
+                {group.items.map((item) => (
                   <li key={item.id} className="flex items-center gap-3 px-3 py-2.5">
                     <button
                       onClick={() => handleToggle(item)}

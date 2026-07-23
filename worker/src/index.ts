@@ -474,6 +474,79 @@ app.get("/api/categories", async (c) => {
   return c.json(results);
 });
 
+interface CategoryPayload {
+  name: string;
+}
+
+app.post("/api/categories", async (c) => {
+  const body = await c.req.json<CategoryPayload>();
+  if (!body.name || !body.name.trim()) {
+    return c.json({ error: "Le nom de la catégorie est obligatoire" }, 400);
+  }
+
+  const maxOrder = await c.env.DB.prepare(
+    "SELECT COALESCE(MAX(default_sort_order), 0) AS max FROM categories"
+  ).first<{ max: number }>();
+
+  const result = await c.env.DB.prepare(
+    "INSERT INTO categories (name, is_custom, default_sort_order) VALUES (?, 1, ?)"
+  )
+    .bind(body.name.trim(), (maxOrder?.max ?? 0) + 1)
+    .run();
+
+  return c.json({ id: result.meta.last_row_id }, 201);
+});
+
+// Any category can be renamed, seeded or custom — "is_custom" only tracks
+// where a category came from, not whether it's editable.
+app.put("/api/categories/:id", async (c) => {
+  const id = c.req.param("id");
+  const body = await c.req.json<CategoryPayload>();
+  if (!body.name || !body.name.trim()) {
+    return c.json({ error: "Le nom de la catégorie est obligatoire" }, 400);
+  }
+
+  await c.env.DB.prepare("UPDATE categories SET name = ? WHERE id = ?")
+    .bind(body.name.trim(), id)
+    .run();
+
+  return c.json({ ok: true });
+});
+
+// Only custom categories can be deleted — the seeded aisle list is the
+// backbone the rest of the app assumes exists. Anything filed under a
+// deleted category (grocery items, dictionary entries) is reassigned to
+// "Autres / Non classé" rather than left pointing at nothing.
+app.delete("/api/categories/:id", async (c) => {
+  const id = c.req.param("id");
+
+  const category = await c.env.DB.prepare(
+    "SELECT is_custom FROM categories WHERE id = ?"
+  )
+    .bind(id)
+    .first<{ is_custom: number }>();
+  if (!category) return c.json({ error: "Catégorie introuvable" }, 404);
+  if (!category.is_custom) {
+    return c.json({ error: "Impossible de supprimer une catégorie par défaut" }, 400);
+  }
+
+  // Reassign to NULL, not to the "Autres / Non classé" row's id — items with
+  // no category already display under that same fallback bucket (see
+  // GroceryList's grouping), and using NULL keeps that a single bucket
+  // instead of splitting it into two depending on how an item got there.
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      "UPDATE grocery_items SET category_id = NULL WHERE category_id = ?"
+    ).bind(id),
+    c.env.DB.prepare(
+      "UPDATE food_dictionary SET category_id = NULL WHERE category_id = ?"
+    ).bind(id),
+    c.env.DB.prepare("DELETE FROM categories WHERE id = ?").bind(id),
+  ]);
+
+  return c.json({ ok: true });
+});
+
 // ---------------------------------------------------------------------------
 // Grocery list — Phase 1 keeps this to a single running list.
 // ---------------------------------------------------------------------------
@@ -493,7 +566,7 @@ async function getOrCreateDefaultList(env: Env): Promise<number> {
 app.get("/api/grocery-items", async (c) => {
   const listId = await getOrCreateDefaultList(c.env);
   const { results } = await c.env.DB.prepare(
-    `SELECT gi.*, c.name AS category_name, c.default_sort_order
+    `SELECT gi.*, c.name AS category_name, c.default_sort_order, c.is_custom AS category_is_custom
      FROM grocery_items gi
      LEFT JOIN categories c ON c.id = gi.category_id
      WHERE gi.list_id = ?
