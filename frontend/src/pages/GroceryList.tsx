@@ -12,11 +12,16 @@ export default function GroceryList() {
   const [items, setItems] = useState<GroceryItem[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [newItemName, setNewItemName] = useState("");
+  const [newItemQuantity, setNewItemQuantity] = useState("");
+  const [newItemUnit, setNewItemUnit] = useState("");
   const [newItemCategoryId, setNewItemCategoryId] = useState("");
   const [newCategoryName, setNewCategoryName] = useState("");
   const [addingCategory, setAddingCategory] = useState(false);
   const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
   const [editingCategoryName, setEditingCategoryName] = useState("");
+  const [editingItemId, setEditingItemId] = useState<number | null>(null);
+  const [editingItemQuantity, setEditingItemQuantity] = useState("");
+  const [editingItemUnit, setEditingItemUnit] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -35,12 +40,22 @@ export default function GroceryList() {
     e.preventDefault();
     if (!newItemName.trim()) return;
     setError(null);
+    const trimmedQuantity = newItemQuantity.trim();
+    const quantity = trimmedQuantity ? Number(trimmedQuantity) : undefined;
+    if (trimmedQuantity && Number.isNaN(quantity)) {
+      setError("Quantité invalide");
+      return;
+    }
     try {
       await api.addGroceryItem({
         name: newItemName.trim(),
+        quantity,
+        unit: newItemUnit.trim() || undefined,
         category_id: newItemCategoryId ? Number(newItemCategoryId) : undefined,
       });
       setNewItemName("");
+      setNewItemQuantity("");
+      setNewItemUnit("");
       setNewItemCategoryId("");
       await refresh();
     } catch (err) {
@@ -114,6 +129,35 @@ export default function GroceryList() {
     }
   }
 
+  function startEditingItem(item: GroceryItem) {
+    setEditingItemId(item.id);
+    setEditingItemQuantity(item.quantity != null ? String(item.quantity) : "");
+    setEditingItemUnit(item.unit ?? "");
+  }
+
+  async function saveEditingItem() {
+    const id = editingItemId;
+    setEditingItemId(null);
+    if (id == null) return;
+    const trimmedQuantity = editingItemQuantity.trim();
+    const quantity = trimmedQuantity ? Number(trimmedQuantity) : null;
+    if (trimmedQuantity && Number.isNaN(quantity)) {
+      setError("Quantité invalide");
+      return;
+    }
+    const unit = editingItemUnit.trim() || null;
+    setError(null);
+    setItems((rows) => rows.map((r) => (r.id === id ? { ...r, quantity, unit } : r)));
+    try {
+      await api.updateGroceryItemQuantity(id, quantity, unit);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Impossible de mettre à jour la quantité"
+      );
+      refresh(); // undo the optimistic update by resyncing with the server
+    }
+  }
+
   async function handleDeleteCategory(id: number) {
     if (
       !confirm(
@@ -157,6 +201,21 @@ export default function GroceryList() {
           onChange={(e) => setNewItemName(e.target.value)}
           placeholder="Ajouter un article…"
           className="min-w-0 flex-1 rounded-lg border border-line bg-white px-3 py-2.5 focus:border-sage focus:outline-none"
+        />
+        <input
+          value={newItemQuantity}
+          onChange={(e) => setNewItemQuantity(e.target.value)}
+          placeholder="Qté"
+          aria-label="Quantité"
+          inputMode="decimal"
+          className="w-16 rounded-lg border border-line bg-white px-2 py-2.5 text-sm focus:border-sage focus:outline-none"
+        />
+        <input
+          value={newItemUnit}
+          onChange={(e) => setNewItemUnit(e.target.value)}
+          placeholder="Unité"
+          aria-label="Unité"
+          className="w-20 rounded-lg border border-line bg-white px-2 py-2.5 text-sm focus:border-sage focus:outline-none"
         />
         <select
           value={newItemCategoryId}
@@ -270,10 +329,55 @@ export default function GroceryList() {
                     >
                       {item.name}
                     </span>
-                    {(item.quantity || item.unit) && (
-                      <span className="font-mono text-xs text-ink/50">
-                        {item.quantity ?? ""} {item.unit ?? ""}
+                    {editingItemId === item.id ? (
+                      <span
+                        className="flex flex-shrink-0 items-center gap-1"
+                        onBlur={(e) => {
+                          // Tabbing from the quantity field to the unit field
+                          // fires a blur on the quantity input too — only
+                          // save once focus actually leaves both fields,
+                          // otherwise the fields unmount mid-edit.
+                          if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                            saveEditingItem();
+                          }
+                        }}
+                      >
+                        <input
+                          autoFocus
+                          value={editingItemQuantity}
+                          onChange={(e) => setEditingItemQuantity(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") e.currentTarget.blur();
+                            if (e.key === "Escape") setEditingItemId(null);
+                          }}
+                          placeholder="Qté"
+                          aria-label="Quantité"
+                          inputMode="decimal"
+                          className="w-12 rounded border border-sage bg-white px-1 py-0.5 text-right font-mono text-xs focus:outline-none"
+                        />
+                        <input
+                          value={editingItemUnit}
+                          onChange={(e) => setEditingItemUnit(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") e.currentTarget.blur();
+                            if (e.key === "Escape") setEditingItemId(null);
+                          }}
+                          placeholder="Unité"
+                          aria-label="Unité"
+                          className="w-16 rounded border border-sage bg-white px-1 py-0.5 font-mono text-xs focus:outline-none"
+                        />
                       </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => startEditingItem(item)}
+                        title="Cliquer pour modifier la quantité"
+                        className="flex-shrink-0 font-mono text-xs text-ink/50 hover:text-sage-dark"
+                      >
+                        {item.quantity != null || item.unit
+                          ? `${item.quantity ?? ""} ${item.unit ?? ""}`.trim()
+                          : "+ qté"}
+                      </button>
                     )}
                     <button
                       onClick={() => handleDelete(item.id)}

@@ -670,11 +670,41 @@ app.post("/api/grocery-items", async (c) => {
 
 app.patch("/api/grocery-items/:id", async (c) => {
   const id = c.req.param("id");
-  const body = await c.req.json<{ is_checked?: boolean }>();
+  const body = await c.req.json<{
+    is_checked?: boolean;
+    quantity?: number | null;
+    unit?: string | null;
+  }>();
 
-  await c.env.DB.prepare("UPDATE grocery_items SET is_checked = ? WHERE id = ?")
-    .bind(body.is_checked ? 1 : 0, id)
-    .run();
+  if (body.is_checked !== undefined) {
+    await c.env.DB.prepare("UPDATE grocery_items SET is_checked = ? WHERE id = ?")
+      .bind(body.is_checked ? 1 : 0, id)
+      .run();
+  }
+
+  // Manual quantity/unit corrections (e.g. filling in a blank line created
+  // by a quick-add that had no quantity to merge against). A trailing
+  // size-conversion note baked into the name — see updateNameConversionNote
+  // — is recomputed against the edited quantity/unit so it doesn't go
+  // stale, same as after an automatic merge.
+  if (body.quantity !== undefined || body.unit !== undefined) {
+    const row = await c.env.DB.prepare(
+      "SELECT name, quantity, unit FROM grocery_items WHERE id = ?"
+    )
+      .bind(id)
+      .first<{ name: string; quantity: number | null; unit: string | null }>();
+    if (!row) return c.json({ error: "Article introuvable" }, 404);
+
+    const newQuantity = body.quantity !== undefined ? body.quantity : row.quantity;
+    const newUnit = body.unit !== undefined ? body.unit : row.unit;
+    const updatedName = updateNameConversionNote(row.name, newUnit, newQuantity);
+
+    await c.env.DB.prepare(
+      "UPDATE grocery_items SET quantity = ?, unit = ?, name = ? WHERE id = ?"
+    )
+      .bind(newQuantity, newUnit, updatedName, id)
+      .run();
+  }
 
   return c.json({ ok: true });
 });

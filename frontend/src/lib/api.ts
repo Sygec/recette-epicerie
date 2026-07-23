@@ -141,6 +141,12 @@ export const api = {
       body: JSON.stringify({ is_checked }),
     }),
 
+  updateGroceryItemQuantity: (id: number, quantity: number | null, unit: string | null) =>
+    request<{ ok: true }>(`/api/grocery-items/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ quantity, unit }),
+    }),
+
   deleteGroceryItem: (id: number) =>
     request<{ ok: true }>(`/api/grocery-items/${id}`, { method: "DELETE" }),
 };
