@@ -228,7 +228,15 @@ INSERT INTO food_dictionary (id, canonical_name, category_id) VALUES
   (69, 'jus',                   13),
   (70, 'eau',                   13),
   (71, 'vin',                   13),
-  (72, 'coriandre',             9)
+  (72, 'coriandre',             9),
+  (73, 'huile végétale',        10),
+  (74, 'poudre de chili',       9),
+  (75, 'cumin',                 9),
+  (76, 'poivre de Cayenne',     9),
+  (77, 'mélasse',               9),
+  (78, 'ketchup',               10),
+  (79, 'moutarde de Dijon',     10),
+  (80, 'moutarde à l''ancienne',10)
 ON CONFLICT(id) DO NOTHING;
 
 INSERT INTO food_aliases (food_id, alias, lang) VALUES
@@ -303,5 +311,13 @@ INSERT INTO food_aliases (food_id, alias, lang) VALUES
   (69, 'jus', 'fr'), (69, 'juice', 'en'),
   (70, 'eau', 'fr'), (70, 'water', 'en'),
   (71, 'vin', 'fr'), (71, 'wine', 'en'),
-  (72, 'coriandre', 'fr'), (72, 'coriandre moulue', 'fr'), (72, 'coriander', 'en'), (72, 'ground coriander', 'en')
+  (72, 'coriandre', 'fr'), (72, 'coriandre moulue', 'fr'), (72, 'coriander', 'en'), (72, 'ground coriander', 'en'),
+  (73, 'huile végétale', 'fr'), (73, 'vegetable oil', 'en'),
+  (74, 'poudre de chili', 'fr'), (74, 'chili powder', 'en'),
+  (75, 'cumin', 'fr'), (75, 'cumin moulu', 'fr'), (75, 'ground cumin', 'en'),
+  (76, 'poivre de cayenne', 'fr'), (76, 'cayenne', 'fr'), (76, 'cayenne pepper', 'en'),
+  (77, 'mélasse', 'fr'), (77, 'molasses', 'en'),
+  (78, 'ketchup', 'fr'),
+  (79, 'moutarde de dijon', 'fr'), (79, 'dijon mustard', 'en'),
+  (80, 'moutarde à l''ancienne', 'fr'), (80, 'whole-grain mustard', 'en'), (80, 'wholegrain mustard', 'en'), (80, 'whole grain mustard', 'en')
 ON CONFLICT(alias) DO NOTHING;

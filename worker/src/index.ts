@@ -9,7 +9,7 @@ import {
   mapFallbackToRecipe,
   mapJsonLdToRecipe,
 } from "./recipeImport";
-import { loadAliasRows, matchFood, normalizeFoodText } from "./foodDictionary";
+import { loadAliasRows, matchFood, normalizeFoodText, unitsMatch } from "./foodDictionary";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -608,22 +608,25 @@ app.post("/api/grocery-items", async (c) => {
   const foodId = match?.food_id ?? null;
   const categoryId = body.category_id ?? match?.category_id ?? null;
 
-  const existing = foodId
+  // Unit comparison happens in code, not SQL, so it can treat true synonyms
+  // ("boîte"/"can", singular/plural) as equal without attempting real unit
+  // conversion — see unitsMatch().
+  const candidates = foodId
     ? await c.env.DB.prepare(
-        `SELECT id, quantity FROM grocery_items
-         WHERE list_id = ? AND food_id = ? AND is_checked = 0
-           AND ((? IS NULL AND unit IS NULL) OR lower(trim(unit)) = lower(trim(?)))`
+        `SELECT id, quantity, unit FROM grocery_items
+         WHERE list_id = ? AND food_id = ? AND is_checked = 0`
       )
-        .bind(listId, foodId, unit, unit)
-        .first<{ id: number; quantity: number | null }>()
+        .bind(listId, foodId)
+        .all<{ id: number; quantity: number | null; unit: string | null }>()
     : await c.env.DB.prepare(
-        `SELECT id, quantity FROM grocery_items
+        `SELECT id, quantity, unit FROM grocery_items
          WHERE list_id = ? AND food_id IS NULL AND is_checked = 0
-           AND lower(trim(name)) = ?
-           AND ((? IS NULL AND unit IS NULL) OR lower(trim(unit)) = lower(trim(?)))`
+           AND lower(trim(name)) = ?`
       )
-        .bind(listId, normalizeFoodText(body.name), unit, unit)
-        .first<{ id: number; quantity: number | null }>();
+        .bind(listId, normalizeFoodText(body.name))
+        .all<{ id: number; quantity: number | null; unit: string | null }>();
+
+  const existing = candidates.results.find((row) => unitsMatch(row.unit, unit));
 
   if (existing) {
     const mergedQuantity =

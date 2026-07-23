@@ -65,6 +65,50 @@ export function matchFood(text: string, aliasRows: AliasRow[]): FoodMatch | null
   return best ? { food_id: best.food_id, category_id: best.category_id } : null;
 }
 
+// Some units are the exact same real quantity across languages/phrasing —
+// not different scales needing conversion math, just different words for
+// the same count: "boîte"/"can", "pincée"/"pinch", "gousse"/"clove", or
+// simply singular vs plural ("tablespoon"/"tablespoons"). These are safe to
+// treat as equal for merge purposes, since summing "1 boîte" + "1 can" = 2
+// of that same container needs no unit math. This deliberately does NOT
+// attempt actual measurement conversion (ml <-> tablespoon <-> cup) — a
+// recipe's French and English versions routinely lead with different
+// primary units for the same real amount ("45 ml (3 c. à soupe)" vs
+// "3 tablespoons (45 ml)"), and those stay as separate lines rather than
+// silently guessing at a conversion.
+const UNIT_SYNONYM_GROUPS: string[][] = [
+  ["boîte", "boite", "can"],
+  ["pincée", "pincee", "pinch"],
+  ["gousse", "clove"],
+  ["tasse", "cup"],
+  ["sachet", "packet", "package"],
+  ["tranche", "slice"],
+  ["botte", "bunch"],
+];
+
+function canonicalUnit(unit: string): string {
+  const normalized = normalizeFoodText(unit);
+  // Cheap plural fold for units not covered by the synonym groups above
+  // (tablespoon/tablespoons, teaspoon/teaspoons, gram/grams...). Guarded by
+  // length so short non-plural units (oz, cs) aren't mangled.
+  const singularish =
+    normalized.endsWith("s") && normalized.length > 3
+      ? normalized.slice(0, -1)
+      : normalized;
+  for (const group of UNIT_SYNONYM_GROUPS) {
+    if (group.some((g) => singularish === g || singularish === `${g}s`)) {
+      return group[0];
+    }
+  }
+  return singularish;
+}
+
+export function unitsMatch(a: string | null, b: string | null): boolean {
+  if (a == null && b == null) return true;
+  if (a == null || b == null) return false;
+  return canonicalUnit(a) === canonicalUnit(b);
+}
+
 export async function loadAliasRows(db: D1Database): Promise<AliasRow[]> {
   const { results } = await db
     .prepare(
