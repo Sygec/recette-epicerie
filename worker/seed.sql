@@ -10,8 +10,11 @@
 --   wrangler d1 execute recipe-grocery-app --local --file=./seed.sql
 
 -- --- Clean out previously seeded rows (cascades to children) ------------------
-DELETE FROM recipes WHERE id IN (1, 2, 3, 4, 5);
+-- grocery_lists first: its grocery_items rows reference recipes(id) with no
+-- ON DELETE CASCADE, so deleting recipes first would fail on a re-run once
+-- those grocery_items exist (as this seed itself creates below).
 DELETE FROM grocery_lists WHERE id = 1;
+DELETE FROM recipes WHERE id IN (1, 2, 3, 4, 5);
 DELETE FROM tags WHERE id IN (1, 2, 3, 4, 5, 6);
 
 -- --- Tags --------------------------------------------------------------------
