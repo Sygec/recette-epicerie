@@ -25,3 +25,31 @@ not_found_handling = "single-page-application"
 #   - Production: set it as an encrypted secret before deploying:
 #       wrangler secret put APP_PASSWORD
 #   - Local dev: put it in worker/.dev.vars (gitignored). See .dev.vars.example.
+
+# Staging: a separate Worker (different name/URL) deployed from the `dev`
+# branch, running whatever code is on that branch against the SAME
+# production D1 database and R2 bucket — there is no separate copy of the
+# data. Useful for testing real deploys without touching main, but a bug
+# here can still corrupt or delete real data; D1 Time Travel (30-day
+# point-in-time restore, built in, no setup needed) is the safety net, not
+# a substitute for care.
+[env.staging]
+name = "recipe-grocery-worker-staging"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "recipe-grocery-app"
+database_id = "6782f5af-9035-4725-ad2e-eb62aba5b364"
+
+[[env.staging.r2_buckets]]
+binding = "PHOTOS"
+bucket_name = "recipe-grocery-app-photos"
+
+[env.staging.assets]
+directory = "../frontend/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+# Staging needs its own APP_PASSWORD secret (can be the same value as prod
+# or different — your call):
+#   wrangler secret put APP_PASSWORD --env staging
