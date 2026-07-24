@@ -10,7 +10,7 @@
 --   wrangler d1 execute recipe-grocery-app --local --file=./seed.sql
 
 -- --- Clean out previously seeded rows (cascades to children) ------------------
-DELETE FROM recipes WHERE id IN (1, 2, 3);
+DELETE FROM recipes WHERE id IN (1, 2, 3, 4);
 DELETE FROM grocery_lists WHERE id = 1;
 DELETE FROM tags WHERE id IN (1, 2, 3, 4, 5, 6);
 
@@ -93,6 +93,33 @@ INSERT INTO recipe_tags (recipe_id, tag_id) VALUES (3, 1), (3, 2), (3, 6);
 
 -- Mark the quinoa salad as a favorite.
 INSERT INTO favorites (recipe_id) VALUES (3) ON CONFLICT(recipe_id) DO NOTHING;
+
+-- --- Recipe 4: Sauce à spaghetti ---------------------------------------------
+INSERT INTO recipes (id, title, description, photo_url, servings, prep_time, cook_time, difficulty, source_url, notes)
+VALUES (4, 'Sauce à spaghetti',
+  'Une sauce à spaghetti classique à la viande, avec un soupçon de saucisson sec en option — se congèle très bien en portions.',
+  NULL, 8, 25, 75, 'Facile', 'https://www.ricardocuisine.com/en/recipes/6441-spaghetti-sauce',
+  'Congeler à plat dans des sacs refermables pour économiser l''espace.');
+
+INSERT INTO ingredients (recipe_id, name, quantity, unit, sort_order) VALUES
+  (4, 'Oignon', 1, NULL, 0),
+  (4, 'Huile d''olive', 3, 'c. à soupe', 1),
+  (4, 'Viande hachée mi-maigre (bœuf, veau, porc)', 450, 'g', 2),
+  (4, 'Gousses d''ail', 2, NULL, 3),
+  (4, 'Chorizo, pepperoni ou autre saucisson sec, haché finement (facultatif)', 55, 'g', 4),
+  (4, 'Tomates italiennes broyées, en conserve', 2, 'boîtes de 796 ml', 5),
+  (4, 'Origan séché', 0.5, 'c. à thé', 6),
+  (4, 'Feuille de laurier', 1, NULL, 7),
+  (4, 'Sel et poivre', NULL, NULL, 8);
+
+INSERT INTO steps (recipe_id, step_number, text) VALUES
+  (4, 1, 'Dans une grande casserole, à feu moyen-vif, attendrir l''oignon dans l''huile.'),
+  (4, 2, 'Ajouter la viande hachée et cuire, en la défaisant à la cuillère de bois, jusqu''à ce qu''elle soit bien dorée. Saler et poivrer.'),
+  (4, 3, 'Ajouter l''ail et la saucisse; cuire 2 minutes en remuant.'),
+  (4, 4, 'Ajouter les tomates, l''origan et la feuille de laurier; bien mélanger et porter à ébullition.'),
+  (4, 5, 'Laisser mijoter à feu doux environ 1 heure, ou jusqu''à ce que la sauce épaississe. Rectifier l''assaisonnement.');
+
+INSERT INTO recipe_tags (recipe_id, tag_id) VALUES (4, 3), (4, 4);
 
 -- --- Grocery list -----------------------------------------------------------
 INSERT INTO grocery_lists (id, name) VALUES (1, 'Liste de courses');
