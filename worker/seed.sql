@@ -10,7 +10,7 @@
 --   wrangler d1 execute recipe-grocery-app --local --file=./seed.sql
 
 -- --- Clean out previously seeded rows (cascades to children) ------------------
-DELETE FROM recipes WHERE id IN (1, 2, 3, 4);
+DELETE FROM recipes WHERE id IN (1, 2, 3, 4, 5);
 DELETE FROM grocery_lists WHERE id = 1;
 DELETE FROM tags WHERE id IN (1, 2, 3, 4, 5, 6);
 
@@ -120,6 +120,20 @@ INSERT INTO steps (recipe_id, step_number, text) VALUES
   (4, 5, 'Laisser mijoter à feu doux environ 1 heure, ou jusqu''à ce que la sauce épaississe. Rectifier l''assaisonnement.');
 
 INSERT INTO recipe_tags (recipe_id, tag_id) VALUES (4, 3), (4, 4);
+
+-- --- Recipe 5: Macaroni au fromage, chili et dindon --------------------------
+-- Imported from https://ledindon.qc.ca/recettes/macaroni-au-fromage-chili-et-dindon/
+-- The page's Recipe JSON-LD only carries name/image/recipeYield — no
+-- recipeIngredient or recipeInstructions, and its prepTime/cookTime aren't
+-- valid ISO 8601 durations (" 5Minutes" instead of "PT5M") — so the import
+-- endpoint's json-ld path leaves description, prep_time, cook_time,
+-- ingredients and steps all empty, exactly as it would via the real
+-- /api/recipes/import call.
+INSERT INTO recipes (id, title, description, photo_url, servings, prep_time, cook_time, difficulty, source_url, notes)
+VALUES (5, 'Macaroni au fromage, chili et dindon',
+  NULL, 'https://ledindon.qc.ca/wp-content/uploads/2022/11/6694_modale.jpg',
+  6, NULL, NULL, NULL, 'https://ledindon.qc.ca/recettes/macaroni-au-fromage-chili-et-dindon/',
+  'Ingrédients et étapes non fournis par la page source (aucune donnée structurée) — à compléter manuellement.');
 
 -- --- Grocery list -----------------------------------------------------------
 INSERT INTO grocery_lists (id, name) VALUES (1, 'Liste de courses');
