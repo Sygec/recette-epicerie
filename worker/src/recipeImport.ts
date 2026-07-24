@@ -54,6 +54,29 @@ export interface ExtractedHtml {
   ogDescription?: string;
   ogImage?: string;
   pageTitle?: string;
+  fullRecipeLink?: string;
+}
+
+// Some sites (e.g. ricardocuisine.com's /videos/recettes/... pages) publish a
+// video teaser page instead of the recipe itself: its JSON-LD describes the
+// VideoObject, not a Recipe, and the ingredients/steps aren't in the HTML at
+// all — but the page body links to the real recipe page with wording like
+// "Pour la recette complète, cliquez ici" / "get the full recipe". Recognize
+// that link so the caller can follow it instead of giving up.
+const FULL_RECIPE_LINK_CUES = [
+  "recette complete",
+  "voir la recette",
+  "full recipe",
+  "get the recipe",
+  "see the recipe",
+  "view recipe",
+];
+
+function normalizeForCueMatch(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase();
 }
 
 export async function extractFromHtml(response: Response): Promise<ExtractedHtml> {
@@ -63,6 +86,11 @@ export async function extractFromHtml(response: Response): Promise<ExtractedHtml
   let currentBlock = "";
   let inJsonLd = false;
   let titleBuf = "";
+  // The cue phrase usually sits next to the link rather than inside it (e.g.
+  // "Pour la recette complète, cliquez <a href=...>ici</a>"), so track a
+  // trailing window of nearby paragraph/div/span text rather than just the
+  // anchor's own text.
+  let recentText = "";
 
   const rewriter = new HTMLRewriter()
     .on('script[type="application/ld+json"]', {
@@ -99,6 +127,23 @@ export async function extractFromHtml(response: Response): Promise<ExtractedHtml
       text(chunk) {
         titleBuf += chunk.text;
         if (chunk.lastInTextNode) result.pageTitle = titleBuf.trim();
+      },
+    })
+    .on("p, div, span", {
+      text(chunk) {
+        recentText = (recentText + chunk.text).slice(-300);
+      },
+    })
+    .on("a[href]", {
+      element(el) {
+        const href = el.getAttribute("href");
+        el.onEndTag(() => {
+          if (!href || result.fullRecipeLink) return;
+          const normalized = normalizeForCueMatch(recentText);
+          if (FULL_RECIPE_LINK_CUES.some((cue) => normalized.includes(cue))) {
+            result.fullRecipeLink = href;
+          }
+        });
       },
     });
 

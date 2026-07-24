@@ -238,16 +238,15 @@ app.post("/api/recipes/import", async (c) => {
     return c.json({ error: "URL invalide (http ou https requis)" }, 400);
   }
 
+  const fetchHeaders = {
+    "User-Agent":
+      "Mozilla/5.0 (compatible; RecettesEtCoursesBot/1.0; +recette-epicerie)",
+    Accept: "text/html",
+  };
+
   let pageResponse: Response;
   try {
-    pageResponse = await fetch(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (compatible; RecettesEtCoursesBot/1.0; +recette-epicerie)",
-        Accept: "text/html",
-      },
-      redirect: "follow",
-    });
+    pageResponse = await fetch(url, { headers: fetchHeaders, redirect: "follow" });
   } catch {
     return c.json({ error: "Impossible de joindre cette page" }, 400);
   }
@@ -263,8 +262,34 @@ app.post("/api/recipes/import", async (c) => {
     return c.json({ error: "Cette URL ne semble pas être une page web" }, 400);
   }
 
-  const extracted = await extractFromHtml(pageResponse);
-  const recipeNode = findRecipeInJsonLd(extracted.jsonLdBlocks);
+  let extracted = await extractFromHtml(pageResponse);
+  let recipeNode = findRecipeInJsonLd(extracted.jsonLdBlocks);
+
+  // Some pages (e.g. a site's video-recipe teaser) don't carry Recipe JSON-LD
+  // themselves but link to the real recipe page ("full recipe" / "recette
+  // complète"). Follow that link once, same-origin only, and retry there.
+  if (!recipeNode && extracted.fullRecipeLink) {
+    try {
+      const linkedUrl = new URL(extracted.fullRecipeLink, url);
+      if (linkedUrl.host === new URL(url).host && linkedUrl.href !== url) {
+        const linkedResponse = await fetch(linkedUrl.href, {
+          headers: fetchHeaders,
+          redirect: "follow",
+        });
+        const linkedContentType = linkedResponse.headers.get("content-type") ?? "";
+        if (linkedResponse.ok && linkedContentType.includes("text/html")) {
+          const linkedExtracted = await extractFromHtml(linkedResponse);
+          const linkedRecipeNode = findRecipeInJsonLd(linkedExtracted.jsonLdBlocks);
+          if (linkedRecipeNode) {
+            extracted = linkedExtracted;
+            recipeNode = linkedRecipeNode;
+          }
+        }
+      }
+    } catch {
+      // Malformed link or unreachable — fall through to the fallback below.
+    }
+  }
 
   if (recipeNode) {
     return c.json(mapJsonLdToRecipe(recipeNode));
