@@ -75,13 +75,19 @@ work.
 
 ---
 
-## 2. Multiple grocery lists, one per store
+## 2. Multiple grocery lists, each optionally tied to a store
 
 **Revised after discussion.** Originally scoped as "one list, re-orderable
-by store" — but the actual need is separate lists, one per store, so an
-item only known to be on sale at a specific store lives on that store's
-list and never bleeds into another. Each list has a 1:1 relationship with
-a store, and that store also determines the list's aisle ordering.
+by store" — but the actual need is separate lists, so an item only known
+to be on sale at a specific store lives on that store's list and never
+bleeds into another. A list's store also determines its aisle ordering.
+
+**Not a 1:1 constraint.** Confirmed with the user after staging testing
+surfaced the question directly: a store can have more than one list
+pointing at it (e.g. "IGA - épicerie" and "IGA - spécial" both tied to the
+same IGA store) — genuinely useful, not just an oversight. The API never
+enforced uniqueness on `grocery_lists.store_id` in the first place, so
+this is already the actual behavior, not a gap to close.
 
 ### The app is already single-list today, deliberately
 
