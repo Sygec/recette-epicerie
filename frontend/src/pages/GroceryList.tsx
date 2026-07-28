@@ -397,8 +397,6 @@ export default function GroceryList() {
               <button
                 key={list.id}
                 onClick={() => setActiveListId(list.id)}
-                onDoubleClick={() => startEditingList(list)}
-                title="Double-cliquer pour renommer"
                 className={`rounded-full border px-3 py-1.5 text-sm font-medium ${
                   list.id === activeListId
                     ? "border-sage bg-sage text-white"
@@ -460,8 +458,15 @@ export default function GroceryList() {
           </select>
           <button
             type="button"
+            onClick={() => startEditingList(activeList)}
+            className="font-medium text-sage-dark hover:underline"
+          >
+            Renommer
+          </button>
+          <button
+            type="button"
             onClick={() => handleDeleteList(activeList.id)}
-            className="text-ink/40 hover:text-brick"
+            className="font-medium text-brick hover:underline"
           >
             Supprimer cette liste
           </button>

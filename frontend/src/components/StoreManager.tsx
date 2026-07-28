@@ -147,29 +147,30 @@ export default function StoreManager({ stores, categories, onStoresChanged }: Pr
                   className="flex-1 rounded border border-sage bg-white px-1.5 py-0.5 text-sm focus:outline-none"
                 />
               ) : (
-                <button
-                  type="button"
-                  onClick={() => startEditingStore(store)}
-                  title="Cliquer pour renommer"
-                  className="flex-1 text-left text-sm hover:text-sage-dark"
-                >
-                  {store.name}
-                </button>
+                <span className="flex-1 text-sm">{store.name}</span>
               )}
               <button
                 type="button"
                 onClick={() => toggleExpand(store)}
-                className="text-xs text-ink/50 hover:text-sage-dark"
+                className="text-xs font-medium text-sage-dark hover:underline"
               >
                 {expandedStoreId === store.id ? "Fermer" : "Ordre des allées"}
               </button>
+              {editingStoreId !== store.id && (
+                <button
+                  type="button"
+                  onClick={() => startEditingStore(store)}
+                  className="text-xs font-medium text-sage-dark hover:underline"
+                >
+                  Renommer
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => handleDeleteStore(store.id)}
-                aria-label="Supprimer le magasin"
-                className="text-ink/30 hover:text-brick"
+                className="text-xs font-medium text-brick hover:underline"
               >
-                ✕
+                Supprimer
               </button>
             </div>
 
