@@ -16,20 +16,35 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
+// Rounds to 2 decimals and drops trailing zeros (1.50 -> 1.5, 2.00 -> 2),
+// matching how the unscaled quantity already renders via plain interpolation.
+function roundQuantity(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
 export default function RecipeDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [recipe, setRecipe] = useState<RecipeDetailType | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [desiredServings, setDesiredServings] = useState<number | null>(null);
 
   useEffect(() => {
     if (!id) return;
     api
       .getRecipe(Number(id))
-      .then(setRecipe)
+      .then((r) => {
+        setRecipe(r);
+        setDesiredServings(r.servings ?? null);
+      })
       .catch((err) => setError(err.message));
   }, [id]);
+
+  // recipe.servings is optional (Phase 1 field) — without it there's no base
+  // to scale from, so the stepper is hidden and this stays 1 (see JSX below).
+  const scaleFactor =
+    recipe?.servings && desiredServings ? desiredServings / recipe.servings : 1;
 
   async function toggleFavorite() {
     if (!recipe) return;
@@ -67,7 +82,7 @@ export default function RecipeDetail() {
       for (const ing of recipe.ingredients) {
         await api.addGroceryItem({
           name: ing.name,
-          quantity: ing.quantity ?? undefined,
+          quantity: ing.quantity != null ? roundQuantity(ing.quantity * scaleFactor) : undefined,
           unit: ing.unit ?? undefined,
         });
       }
@@ -116,8 +131,28 @@ export default function RecipeDetail() {
           <p className="mt-2 text-ink/70">{recipe.description}</p>
         )}
 
-        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm text-ink/60">
-          {recipe.servings && <span>{recipe.servings} portions</span>}
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-ink/60">
+          {recipe.servings && desiredServings && (
+            <span className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setDesiredServings((s) => Math.max(1, (s ?? 1) - 1))}
+                aria-label="Réduire les portions"
+                className="flex h-6 w-6 items-center justify-center rounded-full border border-line text-ink/70 hover:border-sage hover:text-sage-dark"
+              >
+                −
+              </button>
+              <span className="font-mono">{desiredServings} portions</span>
+              <button
+                type="button"
+                onClick={() => setDesiredServings((s) => (s ?? 1) + 1)}
+                aria-label="Augmenter les portions"
+                className="flex h-6 w-6 items-center justify-center rounded-full border border-line text-ink/70 hover:border-sage hover:text-sage-dark"
+              >
+                +
+              </button>
+            </span>
+          )}
           {recipe.prep_time && <span>{recipe.prep_time} min prép.</span>}
           {recipe.cook_time && <span>{recipe.cook_time} min cuisson</span>}
           {recipe.difficulty && <span>{recipe.difficulty}</span>}
@@ -160,7 +195,8 @@ export default function RecipeDetail() {
               <li key={ing.id} className="flex justify-between py-2 text-sm">
                 <span>{ing.name}</span>
                 <span className="font-mono text-ink/60">
-                  {ing.quantity ?? ""} {ing.unit ?? ""}
+                  {ing.quantity != null ? roundQuantity(ing.quantity * scaleFactor) : ""}{" "}
+                  {ing.unit ?? ""}
                 </span>
               </li>
             ))}
