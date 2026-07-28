@@ -2,10 +2,12 @@
 
 Design doc for the three Phase 3 features called out in the product spec
 (see `README.md`). Written for review before implementation — nothing here
-is built yet. Build order: **servings scaling → per-store ordering → meal
-planning**, since meal planning's "add the week to the grocery list" action
-depends on servings scaling, and per-store ordering is independent but
-smaller than meal planning.
+is built yet. Build order: **servings scaling → multi-list/per-store
+ordering → meal planning**. Meal planning's "add the week to the grocery
+list" action depends on both of the others: it scales by servings (feature
+1) and needs a target list to add into now that lists are per-store
+(feature 2) — so it goes last even though it's not the largest change on
+its own.
 
 Conventions followed throughout, matching the existing codebase: Hono routes
 added to `worker/src/index.ts`, idempotent schema changes appended to
@@ -73,28 +75,45 @@ work.
 
 ---
 
-## 2. Per-store ingredient ordering
+## 2. Multiple grocery lists, one per store
 
-**Goal:** let the grocery list be ordered/grouped to match how a specific
-store's aisles are laid out, instead of (or in addition to) the generic
-category order.
+**Revised after discussion.** Originally scoped as "one list, re-orderable
+by store" — but the actual need is separate lists, one per store, so an
+item only known to be on sale at a specific store lives on that store's
+list and never bleeds into another. Each list has a 1:1 relationship with
+a store, and that store also determines the list's aisle ordering.
 
-### Existing gap found while researching this
+### The app is already single-list today, deliberately
 
-`grocery_lists.active_store_id` **already exists** in `schema.sql` (line
-90) but there is no `stores` table and nothing in `worker/src/index.ts` or
-the frontend reads or writes it — it's dead scaffolding from Phase 1/2,
-presumably anticipating this exact feature.
+`worker/src/index.ts` has a `getOrCreateDefaultList()` helper (line 585)
+with the comment *"Phase 1 keeps this to a single running list"* — it
+always resolves to the oldest row in `grocery_lists`, creating one if none
+exists. Every grocery-item route (`GET/POST /api/grocery-items`) calls it
+and hard-codes that single `list_id`. This was a known, deliberate Phase 1
+simplification, not an oversight — this feature is what removes it.
 
-Separately: `categories.default_sort_order` exists and is used to *sort the
-"add item" category dropdown* (`GroceryList.tsx` line 229), but the actual
-rendered grocery-list groups (`grouped`, built at line 177) are **not**
-sorted by it — group order today is just "whichever category's items
-appeared first in the list from the API." This should be fixed as part of
-this feature (sorting `grouped` by the active ordering — store-specific if
-a store is selected, `default_sort_order` otherwise) since per-store
-ordering is meaningless if the fallback default ordering isn't even applied
-today.
+**Good news:** the merge/dedup query in `POST /api/grocery-items` (the
+food-dictionary matching logic) is *already* scoped `WHERE list_id = ?
+AND food_id = ?`. That's exactly the behavior wanted — items only merge
+within the same list, so the same ingredient added to two different
+stores' lists correctly stays as two separate lines. No change needed to
+`foodDictionary.ts` or the merge logic itself; only the hard-coded
+single-list resolution around it goes away.
+
+`grocery_lists.active_store_id` already exists in `schema.sql` (line 90)
+but nothing reads or writes it today. It becomes each list's permanent
+store assignment — worth renaming to `store_id` for clarity now that it's
+not "the currently active store" but "the store this list is for"
+(`ALTER TABLE grocery_lists RENAME COLUMN active_store_id TO store_id`,
+supported by D1's SQLite version, low risk).
+
+Separately: `categories.default_sort_order` exists and is used to *sort
+the "add item" category dropdown* (`GroceryList.tsx` line 229), but the
+actual rendered grocery-list groups (`grouped`, built at line 177) are
+**not** sorted by it — group order today is just "whichever category's
+items appeared first in the list from the API." Fixed as part of this
+feature (sorting `grouped` by the list's store order, falling back to
+`default_sort_order`).
 
 ### Data model
 
@@ -111,64 +130,88 @@ CREATE TABLE IF NOT EXISTS store_category_order (
   sort_order INTEGER NOT NULL,
   PRIMARY KEY (store_id, category_id)
 );
+
+-- ALTER TABLE grocery_lists RENAME COLUMN active_store_id TO store_id;
+-- (existing column, repurposed — see above)
 ```
 
 A store without a row for a given category (e.g. a category created after
 the store's order was last set) falls back to that category's
 `default_sort_order` — so `store_category_order` only needs rows for
-categories the user has actually dragged into a custom position, not a
-full copy of every category.
+categories the user actually dragged into a custom position.
 
-`grocery_lists.active_store_id` gets its first real use: `PATCH
-/api/grocery-lists/active-store` sets it (single implicit list, matching
-how `GroceryList.tsx` calls `getGroceryItems()` with no list id today).
+`grocery_lists` already cascade-deletes its items on delete
+(`grocery_items.list_id REFERENCES grocery_lists(id) ON DELETE CASCADE`,
+confirmed in `schema.sql`), so deleting a list is already safe at the DB
+level — deleting a store, however, should probably **not** cascade-delete
+the lists that reference it (a list without its store just falls back to
+default ordering); `store_id` on `grocery_lists` stays a soft/unenforced
+reference like `grocery_items.recipe_id` already is, so this needs no
+special handling — just don't add `ON DELETE CASCADE` to it.
 
 ### API
 
+- `GET /api/grocery-lists` → all lists with their store name joined.
+- `POST /api/grocery-lists {name, store_id?}` → create a list.
+- `PUT /api/grocery-lists/:id {name?, store_id?}` → rename / reassign
+  store.
+- `DELETE /api/grocery-lists/:id` → confirm dialog on the frontend (same
+  pattern as recipe/category delete), cascades to its items via the
+  existing FK.
+- `GET /api/grocery-items?list_id=X` — `list_id` becomes a required query
+  param; `getOrCreateDefaultList` is removed.
+- `POST /api/grocery-items` — payload gains a required `list_id`.
+- `PATCH /api/grocery-items/:id` / `DELETE /api/grocery-items/:id` —
+  unaffected, already scoped by item id.
 - `GET /api/stores`, `POST /api/stores {name}`, `PUT /api/stores/:id
   {name}`, `DELETE /api/stores/:id` — same shape as the existing
   `/api/categories` CRUD.
-- `GET /api/stores/:id/category-order` → `{category_id, sort_order}[]`
-  (categories not customized for this store are simply absent — client
-  fills the gap with `default_sort_order`).
-- `PUT /api/stores/:id/category-order` → replace-all with a full ordered
-  `category_id[]` array (simplest contract for a drag-to-reorder UI: send
-  the whole new order, server assigns `0..n-1`).
-- `PATCH /api/grocery-lists/active-store {store_id: number | null}`.
-- `GET /api/grocery-items` needs to also return the resolved sort position
-  per item's category so the frontend doesn't need a second round trip —
-  either join in `store_category_order` server-side when an active store is
-  set, or have the frontend fetch `/api/stores/:id/category-order`
-  alongside categories (mirrors how it already fetches categories
-  separately today — simpler, no endpoint-shape change needed).
+- `GET /api/stores/:id/category-order` → `{category_id, sort_order}[]`.
+- `PUT /api/stores/:id/category-order` → replace-all with an ordered
+  `category_id[]` array (server assigns `0..n-1`).
 
 ### UI
 
-- New "Magasin" selector in `GroceryList.tsx` header (a `<select>` next to
-  the title, same visual weight as the category dropdown) — "Aucun
-  magasin" (falls back to default order) or a saved store.
-- A small store management view (add/rename/delete stores, drag to reorder
-  categories for the selected store) — could live inline in
-  `GroceryList.tsx` behind a "Gérer les magasins" toggle, consistent with
-  how custom-category management is already inline rather than a separate
-  page.
-- `grouped` sorts by the resolved order (store override, else
-  `default_sort_order`) before rendering.
+- `GroceryList.tsx` gains a list switcher (tabs across the top: "IGA",
+  "Costco", …) — the open list persists as "last selected list id" in
+  `localStorage`, same storage mechanism the session token already uses.
+- Creating a list: inline "+ Liste" form (name + store dropdown),
+  matching the existing inline "+ Catégorie" form already in this file.
+  A list can be created with no store yet (falls back to default order)
+  and have one assigned later.
+- Store management (add/rename/delete stores, drag to reorder categories
+  for a store) lives behind a "Gérer les magasins" toggle, same inline
+  pattern as custom-category management today.
+- `grouped` sorts by the open list's store order (falling back to
+  `default_sort_order` if the list has no store) before rendering.
+- **Open question:** when adding a recipe's ingredients via "Ajouter à la
+  liste de courses" on `RecipeDetail.tsx`, which list do they go to? Two
+  options — (a) always the currently/last-open list (one click, matches
+  today's UX, items can be manually moved after), or (b) a picker shown
+  at add-time. Recommend (a) for v1 — simpler, and splitting a recipe's
+  ingredients across stores is more of a per-item manual decision anyway
+  (e.g. moving one sale item over) than something to solve at import time.
 
 ---
 
 ## 3. Meal planning
 
-**Goal:** assign recipes to days (and optionally meal slots) on a calendar,
-and bulk-add a date range's planned recipes to the grocery list.
+**Goal:** assign a recipe to each day (souper/dinner only, decided below)
+on a calendar, and bulk-add a date range's planned recipes to the grocery
+list.
+
+**Decided:** one slot per day — souper (dinner) only, no déjeuner/dîner
+slots. Dropped `meal_slot` from the schema entirely rather than keep an
+unused column defaulting to a single value — it's cheap to add back as a
+migration later if that ever changes, and carrying it now would just be
+speculative.
 
 ### Data model
 
 ```sql
 CREATE TABLE IF NOT EXISTS meal_plan_entries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  date TEXT NOT NULL,               -- 'YYYY-MM-DD'
-  meal_slot TEXT NOT NULL DEFAULT 'diner',  -- 'dejeuner' | 'diner' | 'souper'
+  date TEXT NOT NULL UNIQUE,        -- 'YYYY-MM-DD', one souper per day
   recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
   servings INTEGER,                 -- NULL = use recipe.servings (feature 1)
   notes TEXT
@@ -177,16 +220,19 @@ CREATE INDEX IF NOT EXISTS idx_meal_plan_entries_date ON meal_plan_entries(date)
 ```
 
 No separate "plan" grouping entity (week/month) — flat rows keyed by date
-keep this simple and match the app's single-household, single-list model.
-A week view is just "entries where date is in this 7-day range," computed
-client-side from `today`/a picked week, not a stored concept.
+keep this simple and match the app's single-household model. A week view
+is just "entries where date is in this 7-day range," computed client-side
+from `today`/a picked week, not a stored concept. `date` is `UNIQUE` since
+there's exactly one souper per day now — assigning a new recipe to an
+already-planned day replaces it (`PUT`, not a second row).
 
 ### API
 
 - `GET /api/meal-plan?start=YYYY-MM-DD&end=YYYY-MM-DD` → entries in range,
   joined with recipe title/photo for display.
-- `POST /api/meal-plan {date, meal_slot, recipe_id, servings?, notes?}`.
-- `PUT /api/meal-plan/:id` (change date/slot/servings — supports drag-to-a-
+- `POST /api/meal-plan {date, recipe_id, servings?, notes?}` — replaces any
+  existing entry for that date (matches the `UNIQUE` constraint on `date`).
+- `PUT /api/meal-plan/:id` (change date/servings — supports drag-to-a-
   different-day in the UI).
 - `DELETE /api/meal-plan/:id`.
 - `POST /api/meal-plan/add-to-grocery-list {start, end}` — server-side loop
@@ -202,22 +248,14 @@ client-side from `today`/a picked week, not a stored concept.
 
 - New route `/planification`, new nav entry alongside "Recettes" /
   "Courses".
-- 7-day week view (prev/next week navigation), each day showing its
-  slot(s) with the assigned recipe's title/thumbnail; click a slot to open
-  a recipe picker (reuse the existing recipe search from `RecipeList.tsx`).
+- 7-day week view (prev/next week navigation), one row per day showing the
+  planned souper's title/thumbnail; click a day to open a recipe picker
+  (reuse the existing recipe search from `RecipeList.tsx`).
 - "Ajouter la semaine à la liste de courses" button → the bulk endpoint
-  above, then navigate to `/courses` (same pattern
-  `addAllToGroceryList` already uses for a single recipe).
-- Empty slots render as an unobtrusive "+" — most days won't be filled for
-  every slot.
-
-### Open question for you
-
-Single meal slot per day (just "what's for dinner") vs. three slots
-(déjeuner/dîner/souper)? The schema above supports either — `meal_slot`
-defaults to `'diner'`, so starting with dinner-only and adding slots later
-is non-breaking either way. Worth deciding before UI work since it changes
-the week-grid layout (7 rows vs. a 7×3 grid).
+  above. Since grocery lists are now per-store (feature 2), this needs a
+  target-list choice too — same "currently/last-open list" default as
+  recipe-detail's add-to-list, for consistency.
+- Empty days render as an unobtrusive "+".
 
 ---
 
@@ -231,13 +269,19 @@ the week-grid layout (7 rows vs. a 7×3 grid).
 3. Servings scaling ships first and needs no migration at all (pure
    frontend + no new tables) — good candidate to build and ship
    independently while the other two are still being reviewed.
-4. Per-store ordering and meal planning each get their own migration/PR-
-   sized chunk of work rather than one giant change, so each can be tested
-   against the live D1 and deployed on its own.
+4. Multi-list/per-store ordering's migration creates `stores` and
+   `store_category_order`, and renames `active_store_id` → `store_id` on
+   `grocery_lists` — no data loss: the one existing list in live D1 keeps
+   its id and items, just gets a name/store assignable after the fact.
+5. Meal planning gets its own migration/PR-sized chunk after that, so each
+   feature is tested against the live D1 and deployed independently.
 
 ## Explicitly out of scope for this pass
 
 - Fraction-glyph quantity display (e.g. "1 ½") for scaled servings.
-- Multi-list / multi-household support — everything above assumes the
-  current single implicit grocery list and single shared login.
+- Multi-household support (multiple *logins*, permissions, etc.) — still
+  a single shared login, just multiple grocery lists under it.
+- Splitting a single recipe's ingredients across more than one list at
+  add-time (the "open question" in feature 2 picks a simpler default).
+- Déjeuner/dîner slots for meal planning — souper-only, see feature 3.
 - Nutrition/calorie totals for a planned week — not in the original spec.
