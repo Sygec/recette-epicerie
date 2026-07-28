@@ -210,6 +210,18 @@ export const api = {
       `/api/grocery-lists/${listId}/items${checkedOnly ? "?checked_only=1" : ""}`,
       { method: "DELETE" }
     ),
+
+  getMealPlan: (start: string, end: string) =>
+    request<MealPlanEntry[]>(`/api/meal-plan?start=${start}&end=${end}`),
+
+  setMealPlanEntry: (payload: { date: string; recipe_id: number; servings?: number }) =>
+    request<{ ok: true }>("/api/meal-plan", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  deleteMealPlanEntry: (id: number) =>
+    request<{ ok: true }>(`/api/meal-plan/${id}`, { method: "DELETE" }),
 };
 
 // ---------------------------------------------------------------------------
@@ -313,6 +325,18 @@ export interface GroceryList {
   store_id: number | null;
   store_name: string | null;
   created_at: string;
+}
+
+export interface MealPlanEntry {
+  id: number;
+  date: string;
+  recipe_id: number;
+  servings: number | null;
+  notes: string | null;
+  recipe_title: string;
+  recipe_photo_url: string | null;
+  recipe_servings: number | null;
+  ingredients: Ingredient[];
 }
 
 export interface GroceryItem {

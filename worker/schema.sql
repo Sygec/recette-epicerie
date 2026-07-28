@@ -338,3 +338,19 @@ INSERT INTO food_aliases (food_id, alias, lang) VALUES
   (79, 'moutarde de dijon', 'fr'), (79, 'dijon mustard', 'en'),
   (80, 'moutarde à l''ancienne', 'fr'), (80, 'whole-grain mustard', 'en'), (80, 'wholegrain mustard', 'en'), (80, 'whole grain mustard', 'en')
 ON CONFLICT(alias) DO NOTHING;
+
+-- ---------------------------------------------------------------------------
+-- Meal planning (Phase 3) — one planned souper (dinner) per day. No separate
+-- week/month entity: a week view is just "entries whose date falls in this
+-- range," computed client-side.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS meal_plan_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL UNIQUE,
+  recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  servings INTEGER,
+  notes TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_meal_plan_entries_date ON meal_plan_entries(date);

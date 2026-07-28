@@ -31,6 +31,15 @@ export default function Nav() {
         Courses
       </NavLink>
       <NavLink
+        to="/planification"
+        className={({ isActive }) =>
+          `${linkBase} ${isActive ? "text-sage-dark" : "text-ink/50 hover:text-ink"}`
+        }
+      >
+        <span aria-hidden>📅</span>
+        Planifier
+      </NavLink>
+      <NavLink
         to="/recettes/nouvelle"
         className={({ isActive }) =>
           `${linkBase} ${isActive ? "text-sage-dark" : "text-ink/50 hover:text-ink"}`

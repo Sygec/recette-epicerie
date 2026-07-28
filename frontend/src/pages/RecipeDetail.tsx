@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, RecipeDetail as RecipeDetailType } from "../lib/api";
 import AddToListReview, { ReviewIngredient } from "../components/AddToListReview";
+import { roundQuantity } from "../lib/quantity";
 
 // Only http(s) URLs are safe to render as a clickable href — anything else
 // (notably a javascript: URL) would execute in-page on click, with access to
@@ -15,12 +16,6 @@ function isHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
-}
-
-// Rounds to 2 decimals and drops trailing zeros (1.50 -> 1.5, 2.00 -> 2),
-// matching how the unscaled quantity already renders via plain interpolation.
-function roundQuantity(value: number): number {
-  return Math.round(value * 100) / 100;
 }
 
 export default function RecipeDetail() {

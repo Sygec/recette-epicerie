@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ACTIVE_GROCERY_LIST_KEY, api, GroceryList } from "../lib/api";
 
 export interface ReviewIngredient {
@@ -6,6 +6,12 @@ export interface ReviewIngredient {
   name: string;
   quantity: number | null;
   unit: string | null;
+  // Meal-plan add spans multiple recipes/days — a heading to group this row
+  // under (e.g. "Lundi — Poulet parmesan") and the specific recipe it came
+  // from, overriding the single `recipeId` prop below. A plain recipe add
+  // (RecipeDetail) leaves both unset and gets today's flat, ungrouped list.
+  groupLabel?: string;
+  recipeId?: number;
 }
 
 interface Props {
@@ -47,6 +53,22 @@ export default function AddToListReview({ ingredients, recipeId, onClose, onAdde
     });
   }
 
+  // Groups only render as separate sections when at least one ingredient
+  // actually has a groupLabel — a plain recipe add stays a single flat list,
+  // same as before grouping existed.
+  const groups = useMemo(() => {
+    if (!ingredients.some((i) => i.groupLabel)) {
+      return [{ label: null as string | null, items: ingredients }];
+    }
+    const byLabel = new Map<string, ReviewIngredient[]>();
+    for (const ing of ingredients) {
+      const label = ing.groupLabel ?? "";
+      if (!byLabel.has(label)) byLabel.set(label, []);
+      byLabel.get(label)!.push(ing);
+    }
+    return Array.from(byLabel.entries()).map(([label, items]) => ({ label, items }));
+  }, [ingredients]);
+
   async function handleSubmit() {
     if (!listId || checked.size === 0) return;
     setSubmitting(true);
@@ -58,7 +80,7 @@ export default function AddToListReview({ ingredients, recipeId, onClose, onAdde
           name: ing.name,
           quantity: ing.quantity ?? undefined,
           unit: ing.unit ?? undefined,
-          recipe_id: recipeId,
+          recipe_id: ing.recipeId ?? recipeId,
           list_id: listId,
         });
       }
@@ -116,22 +138,33 @@ export default function AddToListReview({ ingredients, recipeId, onClose, onAdde
               ))}
             </select>
 
-            <ul className="mt-4 divide-y divide-line">
-              {ingredients.map((ing) => (
-                <li key={ing.id} className="flex items-center gap-3 py-2">
-                  <input
-                    type="checkbox"
-                    checked={checked.has(ing.id)}
-                    onChange={() => toggle(ing.id)}
-                    className="h-4 w-4 flex-shrink-0 accent-sage"
-                  />
-                  <span className="flex-1 text-sm">{ing.name}</span>
-                  <span className="font-mono text-xs text-ink/60">
-                    {ing.quantity ?? ""} {ing.unit ?? ""}
-                  </span>
-                </li>
+            <div className="mt-4 space-y-4">
+              {groups.map((group, idx) => (
+                <div key={group.label ?? idx}>
+                  {group.label && (
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-sage-dark/70">
+                      {group.label}
+                    </h3>
+                  )}
+                  <ul className="divide-y divide-line">
+                    {group.items.map((ing) => (
+                      <li key={ing.id} className="flex items-center gap-3 py-2">
+                        <input
+                          type="checkbox"
+                          checked={checked.has(ing.id)}
+                          onChange={() => toggle(ing.id)}
+                          className="h-4 w-4 flex-shrink-0 accent-sage"
+                        />
+                        <span className="flex-1 text-sm">{ing.name}</span>
+                        <span className="font-mono text-xs text-ink/60">
+                          {ing.quantity ?? ""} {ing.unit ?? ""}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               ))}
-            </ul>
+            </div>
 
             {error && <p className="mt-3 text-sm text-brick">{error}</p>}
 

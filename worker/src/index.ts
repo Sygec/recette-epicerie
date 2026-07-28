@@ -495,6 +495,102 @@ app.get("/api/tags", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// Meal planning (Phase 3) — one planned souper (dinner) per day, keyed by
+// date rather than a separate week/month entity (see meal_plan_entries'
+// UNIQUE(date)). Assigning a new recipe to an already-planned day replaces
+// it via the same POST, which is also how a day's servings get edited
+// (re-POST the same recipe_id with a new servings value).
+// ---------------------------------------------------------------------------
+
+interface MealPlanEntryRow {
+  id: number;
+  date: string;
+  recipe_id: number;
+  servings: number | null;
+  notes: string | null;
+  recipe_title: string;
+  recipe_photo_url: string | null;
+  recipe_servings: number | null;
+}
+
+app.get("/api/meal-plan", async (c) => {
+  const start = c.req.query("start");
+  const end = c.req.query("end");
+  if (!start || !end) {
+    return c.json({ error: "start et end sont requis" }, 400);
+  }
+
+  const { results: entries } = await c.env.DB.prepare(
+    `SELECT mpe.id, mpe.date, mpe.recipe_id, mpe.servings, mpe.notes,
+            r.title AS recipe_title, r.photo_url AS recipe_photo_url, r.servings AS recipe_servings
+     FROM meal_plan_entries mpe
+     JOIN recipes r ON r.id = mpe.recipe_id
+     WHERE mpe.date >= ? AND mpe.date <= ?
+     ORDER BY mpe.date ASC`
+  )
+    .bind(start, end)
+    .all<MealPlanEntryRow>();
+
+  if (entries.length === 0) return c.json([]);
+
+  // A second query for ingredients (not a join) — a join would multiply
+  // each entry row by its ingredient count, and every entry needs its full
+  // ingredient list anyway for the "add the week to the grocery list" flow.
+  const recipeIds = [...new Set(entries.map((e) => e.recipe_id))];
+  const placeholders = recipeIds.map(() => "?").join(",");
+  const { results: ingredients } = await c.env.DB.prepare(
+    `SELECT * FROM ingredients WHERE recipe_id IN (${placeholders}) ORDER BY sort_order`
+  )
+    .bind(...recipeIds)
+    .all<{ id: number; recipe_id: number; name: string; quantity: number | null; unit: string | null }>();
+
+  const byRecipe = new Map<number, typeof ingredients>();
+  for (const ing of ingredients) {
+    if (!byRecipe.has(ing.recipe_id)) byRecipe.set(ing.recipe_id, []);
+    byRecipe.get(ing.recipe_id)!.push(ing);
+  }
+
+  return c.json(
+    entries.map((e) => ({ ...e, ingredients: byRecipe.get(e.recipe_id) ?? [] }))
+  );
+});
+
+interface MealPlanPayload {
+  date: string;
+  recipe_id: number;
+  servings?: number;
+  notes?: string;
+}
+
+app.post("/api/meal-plan", async (c) => {
+  const body = await c.req.json<MealPlanPayload>();
+  if (!body.date || !body.recipe_id) {
+    return c.json({ error: "date et recipe_id sont requis" }, 400);
+  }
+
+  await c.env.DB.prepare(
+    `INSERT INTO meal_plan_entries (date, recipe_id, servings, notes)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(date) DO UPDATE SET
+       recipe_id = excluded.recipe_id,
+       servings = excluded.servings,
+       notes = excluded.notes`
+  )
+    .bind(body.date, body.recipe_id, body.servings ?? null, body.notes ?? null)
+    .run();
+
+  return c.json({ ok: true });
+});
+
+app.delete("/api/meal-plan/:id", async (c) => {
+  const id = c.req.param("id");
+  await c.env.DB.prepare("DELETE FROM meal_plan_entries WHERE id = ?")
+    .bind(id)
+    .run();
+  return c.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
 // Categories (seeded aisle list)
 // ---------------------------------------------------------------------------
 
