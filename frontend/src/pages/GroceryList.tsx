@@ -151,6 +151,33 @@ export default function GroceryList() {
     }
   }
 
+  async function handleClearChecked() {
+    if (activeListId == null) return;
+    if (!confirm("Retirer tous les articles cochés de cette liste ?")) return;
+    setError(null);
+    try {
+      await api.clearGroceryItems(activeListId, true);
+      await refreshItems(activeListId);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Impossible de retirer les articles cochés"
+      );
+    }
+  }
+
+  async function handleClearAll() {
+    if (activeListId == null) return;
+    if (!confirm("Vider complètement cette liste ? Tous les articles seront supprimés."))
+      return;
+    setError(null);
+    try {
+      await api.clearGroceryItems(activeListId, false);
+      await refreshItems(activeListId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Impossible de vider la liste");
+    }
+  }
+
   async function handleAddCategory(e: React.FormEvent) {
     e.preventDefault();
     if (!newCategoryName.trim()) return;
@@ -522,6 +549,27 @@ export default function GroceryList() {
               + Catégorie
             </button>
           </form>
+
+          {items.length > 0 && (
+            <div className="mt-2 flex gap-2 text-sm">
+              <button
+                type="button"
+                onClick={handleClearChecked}
+                disabled={!items.some((i) => i.is_checked)}
+                className="text-ink/50 hover:text-brick disabled:opacity-40 disabled:hover:text-ink/50"
+              >
+                Retirer les articles cochés
+              </button>
+              <span className="text-ink/20">·</span>
+              <button
+                type="button"
+                onClick={handleClearAll}
+                className="text-ink/50 hover:text-brick"
+              >
+                Vider la liste
+              </button>
+            </div>
+          )}
 
           {items.length === 0 ? (
             <div className="mt-16 text-center text-ink/50">

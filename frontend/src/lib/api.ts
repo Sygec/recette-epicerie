@@ -204,6 +204,12 @@ export const api = {
 
   deleteGroceryItem: (id: number) =>
     request<{ ok: true }>(`/api/grocery-items/${id}`, { method: "DELETE" }),
+
+  clearGroceryItems: (listId: number, checkedOnly: boolean) =>
+    request<{ ok: true }>(
+      `/api/grocery-lists/${listId}/items${checkedOnly ? "?checked_only=1" : ""}`,
+      { method: "DELETE" }
+    ),
 };
 
 // ---------------------------------------------------------------------------

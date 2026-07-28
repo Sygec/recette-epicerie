@@ -895,6 +895,23 @@ app.delete("/api/grocery-items/:id", async (c) => {
   return c.json({ ok: true });
 });
 
+// Bulk clear for a list — "checked_only=1" removes just the found/bought
+// items (post-shopping cleanup), otherwise the whole list is emptied. A
+// single statement rather than N individual deletes, since this is exactly
+// "delete everything matching a condition," not a user-picked subset.
+app.delete("/api/grocery-lists/:id/items", async (c) => {
+  const id = c.req.param("id");
+  const checkedOnly = c.req.query("checked_only") === "1";
+  await c.env.DB.prepare(
+    checkedOnly
+      ? "DELETE FROM grocery_items WHERE list_id = ? AND is_checked = 1"
+      : "DELETE FROM grocery_items WHERE list_id = ?"
+  )
+    .bind(id)
+    .run();
+  return c.json({ ok: true });
+});
+
 // ---------------------------------------------------------------------------
 // Static frontend (single origin)
 // ---------------------------------------------------------------------------
