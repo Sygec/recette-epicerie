@@ -579,23 +579,163 @@ app.delete("/api/categories/:id", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// Grocery list — Phase 1 keeps this to a single running list.
+// Stores — each grocery list is optionally tied to one, both to label the
+// list ("IGA", "Costco") and to drive its aisle ordering below.
 // ---------------------------------------------------------------------------
 
-async function getOrCreateDefaultList(env: Env): Promise<number> {
-  const existing = await env.DB.prepare(
-    "SELECT id FROM grocery_lists ORDER BY created_at ASC LIMIT 1"
-  ).first<{ id: number }>();
-  if (existing) return existing.id;
+app.get("/api/stores", async (c) => {
+  const { results } = await c.env.DB.prepare(
+    "SELECT * FROM stores ORDER BY name"
+  ).all();
+  return c.json(results);
+});
 
-  const result = await env.DB.prepare(
-    "INSERT INTO grocery_lists (name) VALUES ('Liste de courses')"
-  ).run();
-  return result.meta.last_row_id as number;
+interface StorePayload {
+  name: string;
 }
 
+app.post("/api/stores", async (c) => {
+  const body = await c.req.json<StorePayload>();
+  if (!body.name || !body.name.trim()) {
+    return c.json({ error: "Le nom du magasin est obligatoire" }, 400);
+  }
+  const result = await c.env.DB.prepare("INSERT INTO stores (name) VALUES (?)")
+    .bind(body.name.trim())
+    .run();
+  return c.json({ id: result.meta.last_row_id }, 201);
+});
+
+app.put("/api/stores/:id", async (c) => {
+  const id = c.req.param("id");
+  const body = await c.req.json<StorePayload>();
+  if (!body.name || !body.name.trim()) {
+    return c.json({ error: "Le nom du magasin est obligatoire" }, 400);
+  }
+  await c.env.DB.prepare("UPDATE stores SET name = ? WHERE id = ?")
+    .bind(body.name.trim(), id)
+    .run();
+  return c.json({ ok: true });
+});
+
+// A list whose store gets deleted keeps working — it just falls back to
+// default category ordering (see GET /api/grocery-items) — same pattern as
+// deleting a custom category reassigning affected items rather than leaving
+// a dangling reference.
+app.delete("/api/stores/:id", async (c) => {
+  const id = c.req.param("id");
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE grocery_lists SET store_id = NULL WHERE store_id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM stores WHERE id = ?").bind(id),
+  ]);
+  return c.json({ ok: true });
+});
+
+// A store only needs rows here for categories the user actually dragged
+// into a custom position — one not listed simply falls back to that
+// category's default_sort_order (resolved client-side, alongside the
+// existing /api/categories fetch).
+app.get("/api/stores/:id/category-order", async (c) => {
+  const id = c.req.param("id");
+  const { results } = await c.env.DB.prepare(
+    "SELECT category_id, sort_order FROM store_category_order WHERE store_id = ? ORDER BY sort_order ASC"
+  )
+    .bind(id)
+    .all();
+  return c.json(results);
+});
+
+// Replace-all: the client sends the full ordered list of category ids for
+// this store, and the server assigns 0..n-1 — simplest contract for a
+// reorder UI, no partial-update bookkeeping.
+app.put("/api/stores/:id/category-order", async (c) => {
+  const id = c.req.param("id");
+  const body = await c.req.json<{ category_ids?: number[] }>();
+  if (!Array.isArray(body.category_ids)) {
+    return c.json({ error: "category_ids doit être une liste" }, 400);
+  }
+
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM store_category_order WHERE store_id = ?").bind(id),
+    ...body.category_ids.map((categoryId, idx) =>
+      c.env.DB.prepare(
+        "INSERT INTO store_category_order (store_id, category_id, sort_order) VALUES (?, ?, ?)"
+      ).bind(id, categoryId, idx)
+    ),
+  ]);
+
+  return c.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Grocery lists — one per store (Phase 3), replacing the single implicit
+// list Phase 1/2 assumed. Every grocery-item route below now takes an
+// explicit list_id instead of resolving one automatically.
+// ---------------------------------------------------------------------------
+
+app.get("/api/grocery-lists", async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT gl.*, s.name AS store_name
+     FROM grocery_lists gl
+     LEFT JOIN stores s ON s.id = gl.store_id
+     ORDER BY gl.created_at ASC`
+  ).all();
+  return c.json(results);
+});
+
+interface GroceryListPayload {
+  name: string;
+  store_id?: number | null;
+}
+
+app.post("/api/grocery-lists", async (c) => {
+  const body = await c.req.json<GroceryListPayload>();
+  if (!body.name || !body.name.trim()) {
+    return c.json({ error: "Le nom de la liste est obligatoire" }, 400);
+  }
+  const result = await c.env.DB.prepare(
+    "INSERT INTO grocery_lists (name, store_id) VALUES (?, ?)"
+  )
+    .bind(body.name.trim(), body.store_id ?? null)
+    .run();
+  return c.json({ id: result.meta.last_row_id }, 201);
+});
+
+app.put("/api/grocery-lists/:id", async (c) => {
+  const id = c.req.param("id");
+  const body = await c.req.json<Partial<GroceryListPayload>>();
+
+  const existing = await c.env.DB.prepare(
+    "SELECT name, store_id FROM grocery_lists WHERE id = ?"
+  )
+    .bind(id)
+    .first<{ name: string; store_id: number | null }>();
+  if (!existing) return c.json({ error: "Liste introuvable" }, 404);
+
+  const name = body.name !== undefined ? body.name.trim() : existing.name;
+  if (!name) return c.json({ error: "Le nom de la liste est obligatoire" }, 400);
+  const storeId = body.store_id !== undefined ? body.store_id : existing.store_id;
+
+  await c.env.DB.prepare("UPDATE grocery_lists SET name = ?, store_id = ? WHERE id = ?")
+    .bind(name, storeId, id)
+    .run();
+  return c.json({ ok: true });
+});
+
+// Cascades to the list's items via grocery_items.list_id's ON DELETE CASCADE.
+app.delete("/api/grocery-lists/:id", async (c) => {
+  const id = c.req.param("id");
+  await c.env.DB.prepare("DELETE FROM grocery_lists WHERE id = ?").bind(id).run();
+  return c.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Grocery items
+// ---------------------------------------------------------------------------
+
 app.get("/api/grocery-items", async (c) => {
-  const listId = await getOrCreateDefaultList(c.env);
+  const listId = c.req.query("list_id");
+  if (!listId) return c.json({ error: "list_id est requis" }, 400);
+
   const { results } = await c.env.DB.prepare(
     `SELECT gi.*, c.name AS category_name, c.default_sort_order, c.is_custom AS category_is_custom
      FROM grocery_items gi
@@ -614,6 +754,7 @@ interface GroceryItemPayload {
   unit?: string;
   category_id?: number;
   recipe_id?: number;
+  list_id: number;
 }
 
 // Cross-language recognition + merge (Phase 2): the item's free-text name is
@@ -626,9 +767,12 @@ interface GroceryItemPayload {
 // is never rewritten by this; the dictionary only drives categorization and
 // merge-matching.
 app.post("/api/grocery-items", async (c) => {
-  const listId = await getOrCreateDefaultList(c.env);
   const body = await c.req.json<GroceryItemPayload>();
 
+  if (!body.list_id) {
+    return c.json({ error: "list_id est requis" }, 400);
+  }
+  const listId = body.list_id;
   if (!body.name || !body.name.trim()) {
     return c.json({ error: "Le nom de l'article est obligatoire" }, 400);
   }

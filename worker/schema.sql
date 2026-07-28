@@ -84,10 +84,27 @@ CREATE TABLE IF NOT EXISTS categories (
   default_sort_order INTEGER DEFAULT 0
 );
 
+-- A grocery list has at most one store (Phase 3): the store both labels the
+-- list ("IGA", "Costco") and drives its aisle ordering via
+-- store_category_order below. A list without a store just uses categories'
+-- default_sort_order.
+CREATE TABLE IF NOT EXISTS stores (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS store_category_order (
+  store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+  category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+  sort_order INTEGER NOT NULL,
+  PRIMARY KEY (store_id, category_id)
+);
+
 CREATE TABLE IF NOT EXISTS grocery_lists (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL DEFAULT 'Liste de courses',
-  active_store_id INTEGER,
+  store_id INTEGER REFERENCES stores(id),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

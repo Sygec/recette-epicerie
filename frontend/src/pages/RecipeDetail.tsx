@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, RecipeDetail as RecipeDetailType } from "../lib/api";
+import AddToListReview, { ReviewIngredient } from "../components/AddToListReview";
 
 // Only http(s) URLs are safe to render as a clickable href — anything else
 // (notably a javascript: URL) would execute in-page on click, with access to
@@ -29,6 +30,7 @@ export default function RecipeDetail() {
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [desiredServings, setDesiredServings] = useState<number | null>(null);
+  const [showAddToList, setShowAddToList] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -75,26 +77,14 @@ export default function RecipeDetail() {
     }
   }
 
-  async function addAllToGroceryList() {
-    if (!recipe) return;
-    setActionError(null);
-    try {
-      for (const ing of recipe.ingredients) {
-        await api.addGroceryItem({
-          name: ing.name,
-          quantity: ing.quantity != null ? roundQuantity(ing.quantity * scaleFactor) : undefined,
-          unit: ing.unit ?? undefined,
-        });
-      }
-      navigate("/courses");
-    } catch (err) {
-      setActionError(
-        err instanceof Error
-          ? `Certains ingrédients n'ont pas pu être ajoutés (${err.message}). Vérifiez la liste de courses.`
-          : "Impossible d'ajouter les ingrédients à la liste de courses"
-      );
-    }
-  }
+  const reviewIngredients: ReviewIngredient[] = recipe
+    ? recipe.ingredients.map((ing) => ({
+        id: ing.id,
+        name: ing.name,
+        quantity: ing.quantity != null ? roundQuantity(ing.quantity * scaleFactor) : null,
+        unit: ing.unit,
+      }))
+    : [];
 
   if (error) return <p className="p-6 text-brick">{error}</p>;
   if (!recipe) return <p className="p-6 text-ink/40">Chargement…</p>;
@@ -175,7 +165,7 @@ export default function RecipeDetail() {
 
         <div className="mt-6 flex gap-2">
           <button
-            onClick={addAllToGroceryList}
+            onClick={() => setShowAddToList(true)}
             className="flex-1 rounded-lg bg-sage px-4 py-2.5 font-medium text-white hover:bg-sage-dark"
           >
             Ajouter à la liste de courses
@@ -187,6 +177,18 @@ export default function RecipeDetail() {
             Modifier
           </Link>
         </div>
+
+        {showAddToList && (
+          <AddToListReview
+            ingredients={reviewIngredients}
+            recipeId={recipe.id}
+            onClose={() => setShowAddToList(false)}
+            onAdded={() => {
+              setShowAddToList(false);
+              navigate("/courses");
+            }}
+          />
+        )}
 
         <section className="mt-8">
           <h2 className="font-display text-xl text-sage-dark">Ingrédients</h2>

@@ -1,5 +1,11 @@
 const TOKEN_KEY = "session_token";
 
+// Shared between GroceryList (which list tab opens by default) and
+// AddToListReview (which list an add defaults to / lands on) — the same
+// key so adding items to a list also makes that the one you see on
+// /courses afterward, instead of the two staying independently "last used."
+export const ACTIVE_GROCERY_LIST_KEY = "active_grocery_list_id";
+
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
@@ -122,13 +128,62 @@ export const api = {
   deleteCategory: (id: number) =>
     request<{ ok: true }>(`/api/categories/${id}`, { method: "DELETE" }),
 
-  getGroceryItems: () => request<GroceryItem[]>("/api/grocery-items"),
+  getStores: () => request<Store[]>("/api/stores"),
+
+  createStore: (name: string) =>
+    request<{ id: number }>("/api/stores", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+
+  renameStore: (id: number, name: string) =>
+    request<{ ok: true }>(`/api/stores/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ name }),
+    }),
+
+  deleteStore: (id: number) =>
+    request<{ ok: true }>(`/api/stores/${id}`, { method: "DELETE" }),
+
+  getStoreCategoryOrder: (storeId: number) =>
+    request<StoreCategoryOrderEntry[]>(`/api/stores/${storeId}/category-order`),
+
+  setStoreCategoryOrder: (storeId: number, categoryIds: number[]) =>
+    request<{ ok: true }>(`/api/stores/${storeId}/category-order`, {
+      method: "PUT",
+      body: JSON.stringify({ category_ids: categoryIds }),
+    }),
+
+  getGroceryLists: () => request<GroceryList[]>("/api/grocery-lists"),
+
+  createGroceryList: (name: string, storeId?: number | null) =>
+    request<{ id: number }>("/api/grocery-lists", {
+      method: "POST",
+      body: JSON.stringify({ name, store_id: storeId ?? null }),
+    }),
+
+  updateGroceryList: (
+    id: number,
+    payload: { name?: string; store_id?: number | null }
+  ) =>
+    request<{ ok: true }>(`/api/grocery-lists/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+
+  deleteGroceryList: (id: number) =>
+    request<{ ok: true }>(`/api/grocery-lists/${id}`, { method: "DELETE" }),
+
+  getGroceryItems: (listId: number) =>
+    request<GroceryItem[]>(`/api/grocery-items?list_id=${listId}`),
 
   addGroceryItem: (payload: {
     name: string;
     quantity?: number;
     unit?: string;
     category_id?: number;
+    recipe_id?: number;
+    list_id: number;
   }) =>
     request<{ id: number }>("/api/grocery-items", {
       method: "POST",
@@ -235,8 +290,28 @@ export interface Category {
   default_sort_order: number;
 }
 
+export interface Store {
+  id: number;
+  name: string;
+  created_at: string;
+}
+
+export interface StoreCategoryOrderEntry {
+  category_id: number;
+  sort_order: number;
+}
+
+export interface GroceryList {
+  id: number;
+  name: string;
+  store_id: number | null;
+  store_name: string | null;
+  created_at: string;
+}
+
 export interface GroceryItem {
   id: number;
+  list_id: number;
   name: string;
   quantity: number | null;
   unit: string | null;
