@@ -5,7 +5,7 @@ import RecipePicker from "../components/RecipePicker";
 import AddToListReview, { ReviewIngredient } from "../components/AddToListReview";
 import { roundQuantity } from "../lib/quantity";
 
-const WEEKDAY_NAMES = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"];
+const WEEKDAY_NAMES = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"];
 
 // Local-date formatting (not toISOString, which converts to UTC and can
 // shift the date by a day depending on the viewer's timezone offset).
@@ -17,12 +17,10 @@ function formatDate(d: Date): string {
 }
 
 function startOfWeek(d: Date): Date {
-  const weekday = d.getDay(); // 0 = Sunday .. 6 = Saturday
-  const mondayOffset = weekday === 0 ? -6 : 1 - weekday;
-  const monday = new Date(d);
-  monday.setDate(d.getDate() + mondayOffset);
-  monday.setHours(0, 0, 0, 0);
-  return monday;
+  const sunday = new Date(d);
+  sunday.setDate(d.getDate() - d.getDay()); // getDay(): 0 = Sunday .. 6 = Saturday
+  sunday.setHours(0, 0, 0, 0);
+  return sunday;
 }
 
 function addDays(d: Date, n: number): Date {

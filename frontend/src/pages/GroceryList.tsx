@@ -404,7 +404,10 @@ export default function GroceryList() {
                 }`}
               >
                 {list.name}
-                {list.store_name ? ` · ${list.store_name}` : ""}
+                {list.store_name &&
+                list.store_name.trim().toLowerCase() !== list.name.trim().toLowerCase()
+                  ? ` · ${list.store_name}`
+                  : ""}
               </button>
             )
           )}
