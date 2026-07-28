@@ -773,7 +773,7 @@ app.get("/api/grocery-lists", async (c) => {
     `SELECT gl.*, s.name AS store_name
      FROM grocery_lists gl
      LEFT JOIN stores s ON s.id = gl.store_id
-     ORDER BY gl.created_at ASC`
+     ORDER BY gl.name COLLATE NOCASE ASC`
   ).all();
   return c.json(results);
 });

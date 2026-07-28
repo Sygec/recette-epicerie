@@ -28,8 +28,6 @@ export default function GroceryList() {
   const [newItemQuantity, setNewItemQuantity] = useState("");
   const [newItemUnit, setNewItemUnit] = useState("");
   const [newItemCategoryId, setNewItemCategoryId] = useState("");
-  const [newCategoryName, setNewCategoryName] = useState("");
-  const [addingCategory, setAddingCategory] = useState(false);
   const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
   const [editingCategoryName, setEditingCategoryName] = useState("");
   const [editingItemId, setEditingItemId] = useState<number | null>(null);
@@ -170,22 +168,6 @@ export default function GroceryList() {
       await refreshItems(activeListId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Impossible de vider la liste");
-    }
-  }
-
-  async function handleAddCategory(e: React.FormEvent) {
-    e.preventDefault();
-    if (!newCategoryName.trim()) return;
-    setError(null);
-    setAddingCategory(true);
-    try {
-      await api.createCategory(newCategoryName.trim());
-      setNewCategoryName("");
-      await refreshCategories();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Impossible de créer la catégorie");
-    } finally {
-      setAddingCategory(false);
     }
   }
 
@@ -362,6 +344,7 @@ export default function GroceryList() {
           categories={categories}
           onListsChanged={handleListsChanged}
           onStoresChanged={refreshStores}
+          onCategoriesChanged={refreshCategories}
           onDeleteList={handleDeleteList}
           onClose={() => setShowManageModal(false)}
         />
@@ -376,88 +359,53 @@ export default function GroceryList() {
         </div>
       ) : activeListId == null ? null : (
         <>
-          <form onSubmit={handleAdd} className="mt-4 flex flex-wrap gap-2">
-            <input
-              value={newItemName}
-              onChange={(e) => setNewItemName(e.target.value)}
-              placeholder="Ajouter un article…"
-              className="min-w-0 flex-1 rounded-lg border border-line bg-white px-3 py-2.5 focus:border-sage focus:outline-none"
-            />
-            <input
-              value={newItemQuantity}
-              onChange={(e) => setNewItemQuantity(e.target.value)}
-              placeholder="Qté"
-              aria-label="Quantité"
-              inputMode="decimal"
-              className="w-16 rounded-lg border border-line bg-white px-2 py-2.5 text-sm focus:border-sage focus:outline-none"
-            />
-            <input
-              value={newItemUnit}
-              onChange={(e) => setNewItemUnit(e.target.value)}
-              placeholder="Unité"
-              aria-label="Unité"
-              className="w-20 rounded-lg border border-line bg-white px-2 py-2.5 text-sm focus:border-sage focus:outline-none"
-            />
-            <select
-              value={newItemCategoryId}
-              onChange={(e) => setNewItemCategoryId(e.target.value)}
-              aria-label="Catégorie"
-              className="rounded-lg border border-line bg-white px-2 py-2.5 text-sm text-ink/70 focus:border-sage focus:outline-none"
-            >
-              <option value="">Catégorie (auto)</option>
-              {categories
-                .slice()
-                .sort((a, b) => a.default_sort_order - b.default_sort_order)
-                .map((cat) => (
-                  <option key={cat.id} value={cat.id}>
-                    {cat.name}
-                  </option>
-                ))}
-            </select>
-            <button
-              type="submit"
-              className="rounded-lg bg-sage px-4 py-2.5 font-medium text-white hover:bg-sage-dark"
-            >
-              Ajouter
-            </button>
-          </form>
-
-          <form onSubmit={handleAddCategory} className="mt-2 flex gap-2">
-            <input
-              value={newCategoryName}
-              onChange={(e) => setNewCategoryName(e.target.value)}
-              placeholder="Nouvelle catégorie…"
-              className="min-w-0 flex-1 rounded-lg border border-line bg-white/60 px-3 py-1.5 text-sm focus:border-sage focus:outline-none"
-            />
-            <button
-              type="submit"
-              disabled={addingCategory || !newCategoryName.trim()}
-              className="rounded-lg border border-sage px-3 py-1.5 text-sm font-medium text-sage-dark hover:bg-sage/10 disabled:opacity-50"
-            >
-              + Catégorie
-            </button>
-          </form>
-
-          {items.length > 0 && (
-            <div className="mt-2 flex gap-2 text-sm">
-              <button
-                type="button"
-                onClick={handleClearChecked}
-                disabled={!items.some((i) => i.is_checked)}
-                className="text-ink/50 hover:text-brick disabled:opacity-40 disabled:hover:text-ink/50"
+          <div className="mt-4 rounded-card border border-sage/25 bg-sage/5 p-3">
+            <form onSubmit={handleAdd} className="flex flex-wrap gap-2">
+              <input
+                value={newItemName}
+                onChange={(e) => setNewItemName(e.target.value)}
+                placeholder="Ajouter un article…"
+                className="min-w-0 flex-1 rounded-lg border border-line bg-white px-3 py-2.5 focus:border-sage focus:outline-none"
+              />
+              <input
+                value={newItemQuantity}
+                onChange={(e) => setNewItemQuantity(e.target.value)}
+                placeholder="Qté"
+                aria-label="Quantité"
+                inputMode="decimal"
+                className="w-16 rounded-lg border border-line bg-white px-2 py-2.5 text-sm focus:border-sage focus:outline-none"
+              />
+              <input
+                value={newItemUnit}
+                onChange={(e) => setNewItemUnit(e.target.value)}
+                placeholder="Unité"
+                aria-label="Unité"
+                className="w-20 rounded-lg border border-line bg-white px-2 py-2.5 text-sm focus:border-sage focus:outline-none"
+              />
+              <select
+                value={newItemCategoryId}
+                onChange={(e) => setNewItemCategoryId(e.target.value)}
+                aria-label="Catégorie"
+                className="rounded-lg border border-line bg-white px-2 py-2.5 text-sm text-ink/70 focus:border-sage focus:outline-none"
               >
-                Retirer les articles cochés
-              </button>
-              <span className="text-ink/20">·</span>
+                <option value="">Catégorie (auto)</option>
+                {categories
+                  .slice()
+                  .sort((a, b) => a.default_sort_order - b.default_sort_order)
+                  .map((cat) => (
+                    <option key={cat.id} value={cat.id}>
+                      {cat.name}
+                    </option>
+                  ))}
+              </select>
               <button
-                type="button"
-                onClick={handleClearAll}
-                className="text-ink/50 hover:text-brick"
+                type="submit"
+                className="rounded-lg bg-sage px-4 py-2.5 font-medium text-white hover:bg-sage-dark"
               >
-                Vider la liste
+                Ajouter
               </button>
-            </div>
-          )}
+            </form>
+          </div>
 
           {items.length === 0 ? (
             <div className="mt-16 text-center text-ink/50">
@@ -589,6 +537,26 @@ export default function GroceryList() {
                   </ul>
                 </section>
               ))}
+            </div>
+          )}
+
+          {items.length > 0 && (
+            <div className="mt-8 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={handleClearChecked}
+                disabled={!items.some((i) => i.is_checked)}
+                className="rounded-lg border border-brick px-3 py-1.5 text-sm font-medium text-brick hover:bg-brick/10 disabled:opacity-40 disabled:hover:bg-transparent"
+              >
+                Retirer les articles cochés
+              </button>
+              <button
+                type="button"
+                onClick={handleClearAll}
+                className="rounded-lg border border-brick px-3 py-1.5 text-sm font-medium text-brick hover:bg-brick/10"
+              >
+                Vider la liste
+              </button>
             </div>
           )}
         </>

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api, Category, GroceryList as GroceryListType, Store } from "../lib/api";
 import StoreManager from "./StoreManager";
+import CategoryManager from "./CategoryManager";
 
 interface Props {
   lists: GroceryListType[];
@@ -8,21 +9,23 @@ interface Props {
   categories: Category[];
   onListsChanged: (selectId?: number) => void;
   onStoresChanged: () => void;
+  onCategoriesChanged: () => void;
   onDeleteList: (id: number) => void;
   onClose: () => void;
 }
 
-// Everything about lists and stores that isn't "which list am I looking at
-// right now" — creating/renaming/deleting a list, assigning its store, and
-// store CRUD/aisle ordering — folded into one modal instead of living
-// inline on the grocery list page, which was getting crowded with controls
-// used only occasionally.
+// Everything about lists, stores, and categories that isn't "which list am
+// I looking at right now" — creating/renaming/deleting a list, assigning
+// its store, store CRUD/aisle ordering, and category CRUD — folded into
+// one modal instead of living inline on the grocery list page, which was
+// getting crowded with controls used only occasionally.
 export default function ListStoreManager({
   lists,
   stores,
   categories,
   onListsChanged,
   onStoresChanged,
+  onCategoriesChanged,
   onDeleteList,
   onClose,
 }: Props) {
@@ -184,6 +187,8 @@ export default function ListStoreManager({
         <div className="mt-6">
           <StoreManager stores={stores} categories={categories} onStoresChanged={onStoresChanged} />
         </div>
+
+        <CategoryManager categories={categories} onCategoriesChanged={onCategoriesChanged} />
       </div>
     </div>
   );
