@@ -274,9 +274,10 @@ consistent with how the rest of the app avoids heavy modal chrome):
   visible and changeable before confirming, so it's never silently wrong.
 - One **checkbox row per ingredient** — name + scaled quantity/unit
   (feature 1's math, already computed by the caller). **Default: all
-  checked.** Unchecking is how you exclude things you already have (salt,
-  pepper, oil, etc.) — see the open question below for a smarter default.
-  For the meal-plan case, rows are grouped under a day/recipe heading
+  unchecked** — opt-in, not opt-out. You check the handful of things you
+  actually need (you're out of, or need more of) rather than unchecking
+  the staples you already have every single time. For the meal-plan case,
+  rows are grouped under a day/recipe heading
   (e.g. "Lundi — Poulet parmesan") rather than flattened, so it's clear
   where each item came from; the same ingredient appearing on two
   different days still shows as two rows here (merging happens after
@@ -294,17 +295,10 @@ what the user actually wants (rarely more than a full week's worth of
 recipes), and reusing the existing single-item endpoint means the
 food-dictionary merge/scaling logic isn't duplicated anywhere.
 
-### Open question for you
-
-Default-all-checked (plain opt-out) covers the ask, but since you named
-salt/pepper/oil specifically: worth adding a **pantry-staple flag** to
-`food_dictionary` (`is_pantry_staple INTEGER DEFAULT 0`, seeded true for
-things like sel, poivre, huile, farine, sucre) so *those specific rows*
-start **unchecked** by default instead of relying on you to uncheck the
-same handful of items every time, while everything else still defaults
-checked? Small addition (one column + seed data, reusing the food-match
-lookup that already runs for every ingredient) — say yes/no and I'll fold
-it into feature 4's build.
+**Decided:** default-unchecked (opt-in) makes a pantry-staple flag
+unnecessary — nothing gets added unless you actively check it, so
+salt/pepper/oil are already excluded by default same as everything else.
+No `food_dictionary` change needed for this.
 
 ---
 
@@ -338,5 +332,5 @@ it into feature 4's build.
   to a second list is a second pass through the review step.
 - Déjeuner/dîner slots for meal planning — souper-only, see feature 3.
 - Nutrition/calorie totals for a planned week — not in the original spec.
-- Pantry-staple auto-uncheck (section 4's open question) — pending your
-  answer, not assumed in either direction.
+- Pantry-staple auto-uncheck flag — moot now that everything defaults
+  unchecked (section 4).
