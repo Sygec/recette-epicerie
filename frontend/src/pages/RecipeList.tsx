@@ -131,7 +131,11 @@ export default function RecipeList() {
                 <div className="flex flex-1 flex-col justify-center px-3 py-2">
                   <h2 className="font-display text-lg leading-tight">{r.title}</h2>
                   <p className="mt-0.5 text-xs text-ink/50">
-                    {[r.prep_time && `${r.prep_time} min prép.`, r.difficulty]
+                    {[
+                      r.prep_time && `${r.prep_time} min prép.`,
+                      r.cook_time && `${r.cook_time} min cuisson`,
+                      r.difficulty,
+                    ]
                       .filter(Boolean)
                       .join(" · ")}
                   </p>
