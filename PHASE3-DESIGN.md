@@ -1,4 +1,4 @@
-# Phase 3 Design — Servings Scaling, Per-Store Ordering, Meal Planning
+# Phase 3 Design — Servings Scaling, Multi-List Ordering, Meal Planning
 
 Design doc for the three Phase 3 features called out in the product spec
 (see `README.md`). Written for review before implementation — nothing here
@@ -47,8 +47,8 @@ different number.
   defaulting to `recipe.servings`.
 - Ingredient list quantities re-render as `quantity * (desiredServings /
   recipe.servings)`, rounded for display (see rounding below).
-- "Ajouter à la liste de courses" sends scaled quantities instead of raw
-  ones.
+- "Ajouter à la liste de courses" no longer adds directly — it opens the
+  shared review step (section 4) pre-filled with scaled quantities.
 - Recipes with `servings == null` (spec allows this — it's an optional
   field): hide the stepper, scaling isn't offered, behavior is unchanged
   from today.
@@ -184,13 +184,12 @@ special handling — just don't add `ON DELETE CASCADE` to it.
   pattern as custom-category management today.
 - `grouped` sorts by the open list's store order (falling back to
   `default_sort_order` if the list has no store) before rendering.
-- **Open question:** when adding a recipe's ingredients via "Ajouter à la
-  liste de courses" on `RecipeDetail.tsx`, which list do they go to? Two
-  options — (a) always the currently/last-open list (one click, matches
-  today's UX, items can be manually moved after), or (b) a picker shown
-  at add-time. Recommend (a) for v1 — simpler, and splitting a recipe's
-  ingredients across stores is more of a per-item manual decision anyway
-  (e.g. moving one sale item over) than something to solve at import time.
+- **Decided:** adding ingredients (from a recipe or the weekly meal plan)
+  always shows an explicit list dropdown at add-time rather than silently
+  using whatever list happens to be open in another tab/session — see the
+  shared review step in section 4. Pre-selecting the last-used list as a
+  convenience default is fine since the dropdown is visible and must be
+  confirmed either way, but say if you'd rather it start blank.
 
 ---
 
@@ -235,14 +234,13 @@ already-planned day replaces it (`PUT`, not a second row).
 - `PUT /api/meal-plan/:id` (change date/servings — supports drag-to-a-
   different-day in the UI).
 - `DELETE /api/meal-plan/:id`.
-- `POST /api/meal-plan/add-to-grocery-list {start, end}` — server-side loop
-  over entries in range, reusing the same ingredient→grocery-item merge
-  path `POST /api/grocery-items` already goes through (food-dictionary
-  matching, unit conversion, quantity scaling by `servings ?? recipe.
-  servings` from feature 1). One bulk endpoint instead of N client-side
-  calls, both for fewer round trips and so a partial failure is one error
-  instead of "3 of 12 ingredients failed" like `addAllToGroceryList`
-  currently risks for a single recipe.
+- No separate bulk "add whole week" endpoint — see section 4: since adding
+  to the list now always goes through a manual selection step, "add the
+  week" is the same review UI as a single recipe, just pre-loaded with
+  every planned day's ingredients instead of one recipe's. Needs
+  `GET /api/meal-plan` to embed each entry's recipe ingredients (join
+  `ingredients`, not just title/photo) so the review step doesn't have to
+  fetch each recipe separately.
 
 ### UI
 
@@ -251,11 +249,62 @@ already-planned day replaces it (`PUT`, not a second row).
 - 7-day week view (prev/next week navigation), one row per day showing the
   planned souper's title/thumbnail; click a day to open a recipe picker
   (reuse the existing recipe search from `RecipeList.tsx`).
-- "Ajouter la semaine à la liste de courses" button → the bulk endpoint
-  above. Since grocery lists are now per-store (feature 2), this needs a
-  target-list choice too — same "currently/last-open list" default as
-  recipe-detail's add-to-list, for consistency.
+- "Ajouter la semaine à la liste de courses" button → opens the shared
+  review step (section 4), pre-loaded with every planned recipe's
+  ingredients (scaled per-entry `servings ?? recipe.servings`), grouped by
+  day so it's clear which item came from which meal.
 - Empty days render as an unobtrusive "+".
+
+---
+
+## 4. Shared: the "add to grocery list" review step
+
+**New, added in response to feedback on the first draft.** Both
+`RecipeDetail.tsx`'s "Ajouter à la liste de courses" and the meal plan's
+"Ajouter la semaine à la liste de courses" (feature 3) currently would add
+every ingredient unconditionally. Replaced with one shared review
+component both call into, so ingredient selection and list targeting are
+consistent everywhere instead of solved twice.
+
+**What it shows**, in a modal (or a full inline panel on mobile widths,
+consistent with how the rest of the app avoids heavy modal chrome):
+
+- A **list dropdown** at the top (feature 2) — populated from
+  `GET /api/grocery-lists`, pre-selected to the last-used list but always
+  visible and changeable before confirming, so it's never silently wrong.
+- One **checkbox row per ingredient** — name + scaled quantity/unit
+  (feature 1's math, already computed by the caller). **Default: all
+  checked.** Unchecking is how you exclude things you already have (salt,
+  pepper, oil, etc.) — see the open question below for a smarter default.
+  For the meal-plan case, rows are grouped under a day/recipe heading
+  (e.g. "Lundi — Poulet parmesan") rather than flattened, so it's clear
+  where each item came from; the same ingredient appearing on two
+  different days still shows as two rows here (merging happens after
+  adding, via the existing list-scoped merge logic — this view is a
+  selection step, not a preview of the final list).
+- An "Ajouter (N)" button, N updating live as boxes are (un)checked,
+  disabled at N=0.
+
+**Submit behavior:** loop over the checked rows client-side, calling the
+existing `POST /api/grocery-items` once per row with the chosen `list_id`
+— the same pattern `addAllToGroceryList` already uses today, just against
+a user-picked subset instead of everything. Kept as a client-side loop
+rather than a new bulk endpoint: selection already bounds the count to
+what the user actually wants (rarely more than a full week's worth of
+recipes), and reusing the existing single-item endpoint means the
+food-dictionary merge/scaling logic isn't duplicated anywhere.
+
+### Open question for you
+
+Default-all-checked (plain opt-out) covers the ask, but since you named
+salt/pepper/oil specifically: worth adding a **pantry-staple flag** to
+`food_dictionary` (`is_pantry_staple INTEGER DEFAULT 0`, seeded true for
+things like sel, poivre, huile, farine, sucre) so *those specific rows*
+start **unchecked** by default instead of relying on you to uncheck the
+same handful of items every time, while everything else still defaults
+checked? Small addition (one column + seed data, reusing the food-match
+lookup that already runs for every ingredient) — say yes/no and I'll fold
+it into feature 4's build.
 
 ---
 
@@ -275,13 +324,19 @@ already-planned day replaces it (`PUT`, not a second row).
    its id and items, just gets a name/store assignable after the fact.
 5. Meal planning gets its own migration/PR-sized chunk after that, so each
    feature is tested against the live D1 and deployed independently.
+6. The shared review step (section 4) is built alongside feature 2 (it
+   needs the list dropdown to exist) and extended, not rebuilt, when
+   feature 3 lands and starts feeding it multi-recipe data.
 
 ## Explicitly out of scope for this pass
 
 - Fraction-glyph quantity display (e.g. "1 ½") for scaled servings.
 - Multi-household support (multiple *logins*, permissions, etc.) — still
   a single shared login, just multiple grocery lists under it.
-- Splitting a single recipe's ingredients across more than one list at
-  add-time (the "open question" in feature 2 picks a simpler default).
+- Splitting a single recipe's *checked* ingredients across more than one
+  list in a single add — one submit targets one list; adding some items
+  to a second list is a second pass through the review step.
 - Déjeuner/dîner slots for meal planning — souper-only, see feature 3.
 - Nutrition/calorie totals for a planned week — not in the original spec.
+- Pantry-staple auto-uncheck (section 4's open question) — pending your
+  answer, not assumed in either direction.
