@@ -8,7 +8,7 @@ import {
   Store,
   StoreCategoryOrderEntry,
 } from "../lib/api";
-import StoreManager from "../components/StoreManager";
+import ListStoreManager from "../components/ListStoreManager";
 
 interface CategoryGroup {
   categoryId: number | null;
@@ -35,12 +35,7 @@ export default function GroceryList() {
   const [editingItemId, setEditingItemId] = useState<number | null>(null);
   const [editingItemQuantity, setEditingItemQuantity] = useState("");
   const [editingItemUnit, setEditingItemUnit] = useState("");
-  const [newListName, setNewListName] = useState("");
-  const [newListStoreId, setNewListStoreId] = useState("");
-  const [addingList, setAddingList] = useState(false);
-  const [editingListId, setEditingListId] = useState<number | null>(null);
-  const [editingListName, setEditingListName] = useState("");
-  const [showStoreManager, setShowStoreManager] = useState(false);
+  const [showManageModal, setShowManageModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -265,55 +260,9 @@ export default function GroceryList() {
     }
   }
 
-  async function handleAddList(e: React.FormEvent) {
-    e.preventDefault();
-    if (!newListName.trim()) return;
-    setError(null);
-    setAddingList(true);
-    try {
-      const storeId = newListStoreId ? Number(newListStoreId) : null;
-      const { id } = await api.createGroceryList(newListName.trim(), storeId);
-      setNewListName("");
-      setNewListStoreId("");
-      await refreshLists();
-      setActiveListId(id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Impossible de créer la liste");
-    } finally {
-      setAddingList(false);
-    }
-  }
-
-  function startEditingList(list: GroceryListType) {
-    setEditingListId(list.id);
-    setEditingListName(list.name);
-  }
-
-  async function saveEditingList() {
-    const id = editingListId;
-    const name = editingListName.trim();
-    setEditingListId(null);
-    if (id == null || !name) return;
-    setError(null);
-    try {
-      await api.updateGroceryList(id, { name });
-      await refreshLists();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Impossible de renommer la liste");
-    }
-  }
-
-  async function handleChangeListStore(storeId: string) {
-    if (activeListId == null) return;
-    setError(null);
-    try {
-      await api.updateGroceryList(activeListId, {
-        store_id: storeId ? Number(storeId) : null,
-      });
-      await refreshLists();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Impossible d'associer le magasin");
-    }
+  async function handleListsChanged(selectId?: number) {
+    await refreshLists();
+    if (selectId != null) setActiveListId(selectId);
   }
 
   async function handleDeleteList(id: number) {
@@ -379,112 +328,43 @@ export default function GroceryList() {
 
       {lists.length > 0 && (
         <div className="mt-4 flex flex-wrap gap-2">
-          {lists.map((list) =>
-            editingListId === list.id ? (
-              <input
-                key={list.id}
-                autoFocus
-                value={editingListName}
-                onChange={(e) => setEditingListName(e.target.value)}
-                onBlur={saveEditingList}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") e.currentTarget.blur();
-                  if (e.key === "Escape") setEditingListId(null);
-                }}
-                className="rounded-full border border-sage bg-white px-3 py-1.5 text-sm focus:outline-none"
-              />
-            ) : (
-              <button
-                key={list.id}
-                onClick={() => setActiveListId(list.id)}
-                className={`rounded-full border px-3 py-1.5 text-sm font-medium ${
-                  list.id === activeListId
-                    ? "border-sage bg-sage text-white"
-                    : "border-line bg-white/60 text-ink/70 hover:border-sage"
-                }`}
-              >
-                {list.name}
-                {list.store_name &&
-                list.store_name.trim().toLowerCase() !== list.name.trim().toLowerCase()
-                  ? ` · ${list.store_name}`
-                  : ""}
-              </button>
-            )
-          )}
-        </div>
-      )}
-
-      <form onSubmit={handleAddList} className="mt-2 flex flex-wrap gap-2">
-        <input
-          value={newListName}
-          onChange={(e) => setNewListName(e.target.value)}
-          placeholder="Nouvelle liste…"
-          className="min-w-0 flex-1 rounded-lg border border-line bg-white/60 px-3 py-1.5 text-sm focus:border-sage focus:outline-none"
-        />
-        <select
-          value={newListStoreId}
-          onChange={(e) => setNewListStoreId(e.target.value)}
-          aria-label="Magasin de la nouvelle liste"
-          className="rounded-lg border border-line bg-white/60 px-2 py-1.5 text-sm text-ink/70 focus:border-sage focus:outline-none"
-        >
-          <option value="">Aucun magasin</option>
-          {stores.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-            </option>
+          {lists.map((list) => (
+            <button
+              key={list.id}
+              onClick={() => setActiveListId(list.id)}
+              className={`rounded-full border px-3 py-1.5 text-sm font-medium ${
+                list.id === activeListId
+                  ? "border-sage bg-sage text-white"
+                  : "border-line bg-white/60 text-ink/70 hover:border-sage"
+              }`}
+            >
+              {list.name}
+              {list.store_name &&
+              list.store_name.trim().toLowerCase() !== list.name.trim().toLowerCase()
+                ? ` · ${list.store_name}`
+                : ""}
+            </button>
           ))}
-        </select>
-        <button
-          type="submit"
-          disabled={addingList || !newListName.trim()}
-          className="rounded-lg border border-sage px-3 py-1.5 text-sm font-medium text-sage-dark hover:bg-sage/10 disabled:opacity-50"
-        >
-          + Liste
-        </button>
-      </form>
-
-      {activeList && (
-        <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-ink/60">
-          <label htmlFor="active-list-store">Magasin :</label>
-          <select
-            id="active-list-store"
-            value={activeList.store_id ?? ""}
-            onChange={(e) => handleChangeListStore(e.target.value)}
-            className="rounded-lg border border-line bg-white/60 px-2 py-1 text-sm focus:border-sage focus:outline-none"
-          >
-            <option value="">Aucun magasin</option>
-            {stores.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={() => startEditingList(activeList)}
-            className="font-medium text-sage-dark hover:underline"
-          >
-            Renommer
-          </button>
-          <button
-            type="button"
-            onClick={() => handleDeleteList(activeList.id)}
-            className="font-medium text-brick hover:underline"
-          >
-            Supprimer cette liste
-          </button>
         </div>
       )}
 
       <button
         type="button"
-        onClick={() => setShowStoreManager((v) => !v)}
+        onClick={() => setShowManageModal(true)}
         className="mt-2 text-xs font-medium text-sage-dark hover:underline"
       >
-        {showStoreManager ? "Masquer les magasins" : "Gérer les magasins"}
+        Gérer les listes et magasins
       </button>
-      {showStoreManager && (
-        <StoreManager stores={stores} categories={categories} onStoresChanged={refreshStores} />
+      {showManageModal && (
+        <ListStoreManager
+          lists={lists}
+          stores={stores}
+          categories={categories}
+          onListsChanged={handleListsChanged}
+          onStoresChanged={refreshStores}
+          onDeleteList={handleDeleteList}
+          onClose={() => setShowManageModal(false)}
+        />
       )}
 
       {error && <p className="mt-3 text-sm text-brick">{error}</p>}
