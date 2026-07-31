@@ -128,11 +128,16 @@ export default function GroceryList() {
     if (!newItemName.trim() || activeListId == null) return;
     setError(null);
     const trimmedQuantity = newItemQuantity.trim();
-    const quantity = trimmedQuantity ? Number(trimmedQuantity) : undefined;
-    if (trimmedQuantity && Number.isNaN(quantity)) {
+    if (trimmedQuantity && Number.isNaN(Number(trimmedQuantity))) {
       setError("Quantité invalide");
       return;
     }
+    // Typing a name and nothing else means one of the thing. Only here, on
+    // the manual add form: a recipe ingredient with no quantity means the
+    // amount is unspecified ("poivre noir", "sel au goût"), and inventing a
+    // 1 for it would be wrong. It also makes adding the same item twice sum
+    // to 2 rather than staying a single quantity-less line.
+    const quantity = trimmedQuantity ? Number(trimmedQuantity) : 1;
     try {
       const name = newItemName.trim();
       const result = await api.addGroceryItem({
