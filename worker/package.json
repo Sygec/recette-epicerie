@@ -5,8 +5,13 @@
   "scripts": {
     "dev": "wrangler dev",
     "test": "vitest run",
+    "build:frontend": "npm --prefix ../frontend install && npm --prefix ../frontend run build",
+    "predeploy": "npm run build:frontend",
     "deploy": "wrangler deploy --env=\"\"",
-    "deploy:staging": "wrangler deploy --env staging"
+    "predeploy:staging": "npm run build:frontend",
+    "deploy:staging": "wrangler deploy --env staging",
+    "predeploy:ci": "npm run build:frontend",
+    "deploy:ci": "wrangler versions upload"
   },
   "dependencies": {
     "hono": "^4.6.0"
