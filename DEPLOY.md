@@ -92,6 +92,48 @@ from step 2. That's your live app. 🎉
 | The Worker / API only | `cd worker && npx wrangler deploy` |
 | The password | `cd worker && npx wrangler secret put APP_PASSWORD` (no redeploy needed) |
 
+## Database migrations
+
+`worker/schema.sql` only creates things that don't exist yet, so it can't add
+a column to a database that's already live. New columns come as numbered files
+in `worker/migrations/`, run by hand, **once per database**:
+
+```bash
+cd worker
+npx wrangler d1 execute recipe-grocery-app --remote --file=./migrations/0004_add_sort_mode_and_position.sql
+```
+
+Three things to know before running one:
+
+- **They are not idempotent.** SQLite has no `ADD COLUMN IF NOT EXISTS`, so a
+  second run fails with "duplicate column name".
+- **A partial apply is a dead end if you just re-run the file.** It stops on
+  the first already-applied statement and never reaches the rest. Check what
+  actually landed before assuming, e.g. for migration 0004:
+
+  ```bash
+  npx wrangler d1 execute recipe-grocery-app --remote --command \
+    "SELECT name FROM pragma_table_info('grocery_items')"
+  ```
+
+  then run only the statements whose column is missing. Symptom to watch for:
+  the app loads and reads fine, but writes fail with a bare 500 — a missing
+  column only breaks the statements that name it.
+- **Staging and production share one database** (see `wrangler.toml`). There is
+  no separate copy of the data, so running a migration "for staging" changes
+  real data. Take a restore point first:
+
+  ```bash
+  npx wrangler d1 time-travel info recipe-grocery-app
+  ```
+
+  D1 keeps 30 days of point-in-time restore, no setup needed.
+
+Migrations so far add columns with defaults, so a Worker deployed *before* the
+migration keeps working *after* it — it's safe to migrate first, then deploy.
+
+To bring a local dev database up to date, run the same file with `--local`.
+
 ## What each command does
 
 | Command | Plain-English purpose |

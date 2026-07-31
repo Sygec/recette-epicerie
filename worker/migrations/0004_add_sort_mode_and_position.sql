@@ -6,6 +6,19 @@
 -- only needs to run once per database. A fresh database created from
 -- schema.sql already has both columns and doesn't need this file.
 --
+-- IF THIS HALF-APPLIED: re-running the whole file is a dead end. It stops on
+-- the first ALTER with "duplicate column name" and never reaches the second,
+-- so the missing column stays missing — and every insert into grocery_items
+-- fails with a 500 while the list itself still loads, which makes it look
+-- like an app bug rather than a schema one. Check what actually landed:
+--
+--   wrangler d1 execute recipe-grocery-app --remote --command \
+--     "SELECT (SELECT COUNT(*) FROM pragma_table_info('grocery_items') WHERE name='position') AS has_position, \
+--             (SELECT COUNT(*) FROM pragma_table_info('grocery_lists') WHERE name='sort_mode') AS has_sort_mode"
+--
+-- Then run only the statements whose column is missing (each of the three
+-- below is independent and safe to run on its own).
+--
 -- NOTE: staging and production share ONE database (see wrangler.toml), so
 -- running this "for staging" is running it against real data. Take a D1 Time
 -- Travel bookmark first:

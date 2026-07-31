@@ -521,7 +521,11 @@ export default function GroceryList() {
             </div>
           )}
 
-          {items.length > 0 && (
+          {/* Shown for any list, empty or not. Sorting nothing is
+              meaningless, but the mode is a property of the list rather than
+              of its current contents — hiding it on an empty list makes the
+              feature look missing on a list you haven't filled yet. */}
+          {activeListId != null && (
             <div className="mt-4 flex items-center justify-end gap-2">
               <span className="text-xs text-ink/40">Trier</span>
               <div
