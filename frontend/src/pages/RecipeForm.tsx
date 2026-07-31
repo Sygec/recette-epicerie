@@ -27,6 +27,10 @@ export default function RecipeForm() {
   ]);
   const [steps, setSteps] = useState<string[]>([""]);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
+  // The photo already on the recipe. Shown so editing doesn't look like the
+  // recipe has no image — it isn't part of the submitted payload, the upload
+  // endpoints own it.
+  const [existingPhotoUrl, setExistingPhotoUrl] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -40,6 +44,7 @@ export default function RecipeForm() {
     if (!isEdit) return;
     api.getRecipe(Number(id)).then((r) => {
       setTitle(r.title);
+      setExistingPhotoUrl(r.photo_url);
       setDescription(r.description ?? "");
       setServings(r.servings?.toString() ?? "");
       setPrepTime(r.prep_time?.toString() ?? "");
@@ -259,6 +264,18 @@ export default function RecipeForm() {
           className={`${inputClass} py-1.5`}
         />
       </label>
+      {existingPhotoUrl && !photoFile && !importedImageUrl && (
+        <div className="mt-2">
+          <img
+            src={existingPhotoUrl}
+            alt=""
+            className="h-32 w-full rounded-lg object-cover"
+          />
+          <p className="mt-1 text-xs text-ink/50">
+            Photo actuelle — conservée si vous n'en choisissez pas une autre.
+          </p>
+        </div>
+      )}
 
       <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <label className={labelClass}>

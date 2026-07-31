@@ -330,6 +330,17 @@ app.put("/api/recipes/:id", async (c) => {
   const id = c.req.param("id");
   const body = await c.req.json<RecipePayload>();
 
+  // The photo isn't part of the edit form — it's set by its own upload
+  // endpoints — so the form doesn't round-trip photo_url and an absent key
+  // has to mean "leave it alone". Treating absent as null wiped the photo of
+  // every recipe on every save, and orphaned the R2 object behind it. An
+  // explicit null still clears it, for a caller that actually means to.
+  const existing = await c.env.DB.prepare("SELECT photo_url FROM recipes WHERE id = ?")
+    .bind(id)
+    .first<{ photo_url: string | null }>();
+  if (!existing) return c.json({ error: "Recette introuvable" }, 404);
+  const photoUrl = body.photo_url !== undefined ? body.photo_url : existing.photo_url;
+
   await c.env.DB.prepare(
     `UPDATE recipes SET
       title = ?, description = ?, photo_url = ?, servings = ?,
@@ -339,7 +350,7 @@ app.put("/api/recipes/:id", async (c) => {
     .bind(
       body.title,
       body.description ?? null,
-      body.photo_url ?? null,
+      photoUrl,
       body.servings ?? null,
       body.prep_time ?? null,
       body.cook_time ?? null,
@@ -380,9 +391,40 @@ app.put("/api/recipes/:id", async (c) => {
 
 app.delete("/api/recipes/:id", async (c) => {
   const id = c.req.param("id");
-  await c.env.DB.prepare("DELETE FROM recipes WHERE id = ?").bind(id).run();
+
+  // grocery_items.recipe_id is the one foreign key to recipes without an
+  // ON DELETE clause (ingredients, steps, tags and meal-plan entries all
+  // cascade), so deleting a recipe that had been added to a list failed the
+  // constraint and the whole delete threw. Drop the link but keep the item:
+  // it's still on the list because you still need to buy it, whatever became
+  // of the recipe it came from.
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE grocery_items SET recipe_id = NULL WHERE recipe_id = ?").bind(
+      id
+    ),
+    c.env.DB.prepare("DELETE FROM recipes WHERE id = ?").bind(id),
+  ]);
+
+  // The row is gone, so nothing can reference these any more.
+  await deleteStalePhotos(c.env, id);
   return c.json({ ok: true });
 });
+
+// Photos live in R2 under a "recipes/<id>/" prefix, but only the key named by
+// recipes.photo_url is ever served. Anything else under that prefix is a
+// previous photo nothing points at any more, so replacing a photo has to
+// clean up after itself or every re-upload leaves a permanent orphan.
+// Deletion is best-effort: losing the DB row's new photo because a stale
+// object couldn't be removed would be a worse trade.
+async function deleteStalePhotos(env: Env, recipeId: string, keepKey?: string) {
+  try {
+    const listed = await env.PHOTOS.list({ prefix: `recipes/${recipeId}/` });
+    const stale = listed.objects.map((o) => o.key).filter((k) => k !== keepKey);
+    if (stale.length) await env.PHOTOS.delete(stale);
+  } catch (err) {
+    console.error("Could not clean up photos for recipe", recipeId, err);
+  }
+}
 
 // Photo upload — stores the file in R2 and returns its public path,
 // which the client then saves onto the recipe's photo_url field.
@@ -414,6 +456,7 @@ app.post("/api/recipes/:id/photo", async (c) => {
   await c.env.DB.prepare("UPDATE recipes SET photo_url = ? WHERE id = ?")
     .bind(photoUrl, id)
     .run();
+  await deleteStalePhotos(c.env, id, key);
 
   return c.json({ photo_url: photoUrl });
 });
@@ -458,6 +501,7 @@ app.post("/api/recipes/:id/photo-from-url", async (c) => {
   await c.env.DB.prepare("UPDATE recipes SET photo_url = ? WHERE id = ?")
     .bind(photoUrl, id)
     .run();
+  await deleteStalePhotos(c.env, id, key);
 
   return c.json({ photo_url: photoUrl });
 });
