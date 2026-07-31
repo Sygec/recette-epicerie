@@ -87,8 +87,20 @@ export default function GroceryList() {
       .finally(() => setLoading(false));
   }, []);
 
+  // A failed load used to reject unhandled, leaving items empty — so the page
+  // rendered "Votre liste est vide" and looked like a list with nothing in it
+  // rather than a list that couldn't be read. Keep whatever was last loaded
+  // and say so instead: an empty list and an unreadable one are very
+  // different things, and only one of them is worth panicking about.
   function refreshItems(listId: number) {
-    return api.getGroceryItems(listId).then(setItems);
+    return api
+      .getGroceryItems(listId)
+      .then(setItems)
+      .catch((err) => {
+        setError(
+          err instanceof Error ? err.message : "Impossible de charger la liste"
+        );
+      });
   }
 
   useEffect(() => {
