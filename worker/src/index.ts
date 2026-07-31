@@ -22,6 +22,21 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.use("*", cors());
 
+// Hono's default for an uncaught throw is a plain-text "Internal Server
+// Error". The client parses errors as JSON and falls back to a generic
+// "Une erreur est survenue" when that fails, so the real cause — a missing
+// column, a constraint violation — never reaches the person who could act on
+// it. Return the message as JSON and log it for `wrangler tail`. The app sits
+// behind a single shared password, so there's no wider audience to leak
+// internals to, and a schema error that says what it is beats a mystery.
+app.onError((err, c) => {
+  console.error("Unhandled error:", err instanceof Error ? (err.stack ?? err.message) : err);
+  return c.json(
+    { error: err instanceof Error ? err.message : "Une erreur est survenue" },
+    500
+  );
+});
+
 // Recipe photos are stored in R2 and later re-served with this same
 // Content-Type, on the same origin as the app (see the ASSETS catch-all
 // below). Without an allowlist, an uploaded file claiming to be text/html or
@@ -1233,10 +1248,23 @@ app.post("/api/grocery-items", async (c) => {
   // New items land at the end of the manual order. A merge (above) returns
   // before this and leaves the target's position untouched, so absorbing a
   // duplicate never moves a line the user placed deliberately.
+  //
+  // Read the next position with its own statement rather than as a subquery
+  // inside the INSERT's VALUES. Same result, but plain parameterised
+  // statements are the path D1 is happiest with, and an insert that reads
+  // from the table it writes to is the kind of construct worth not relying
+  // on. Two lists being added to at the same instant could pick the same
+  // position; that only affects tie order in manual mode and the next drag
+  // rewrites every position anyway.
+  const nextPosition = await c.env.DB.prepare(
+    "SELECT COALESCE(MAX(position), 0) + 1 AS next FROM grocery_items WHERE list_id = ?"
+  )
+    .bind(listId)
+    .first<{ next: number }>();
+
   const result = await c.env.DB.prepare(
     `INSERT INTO grocery_items (list_id, name, quantity, unit, category_id, recipe_id, food_id, position)
-     VALUES (?, ?, ?, ?, ?, ?, ?,
-             (SELECT COALESCE(MAX(position), 0) + 1 FROM grocery_items WHERE list_id = ?))`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       listId,
@@ -1246,7 +1274,7 @@ app.post("/api/grocery-items", async (c) => {
       categoryId,
       body.recipe_id ?? null,
       foodId,
-      listId
+      nextPosition?.next ?? 1
     )
     .run();
 
