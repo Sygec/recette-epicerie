@@ -506,6 +506,166 @@ app.post("/api/recipes/:id/photo-from-url", async (c) => {
   return c.json({ photo_url: photoUrl });
 });
 
+// ---------------------------------------------------------------------------
+// Photo maintenance
+//
+// Nothing deleted from R2 until recently, so the bucket accumulated objects
+// nothing points at: photos replaced by a re-upload, photos of deleted
+// recipes, and photos of recipes whose photo_url was wiped by a save (see
+// PUT /api/recipes/:id). This audits the bucket against the database and
+// proposes what to do; it never acts on its own.
+//
+// Keys are "recipes/<recipeId>/<millis>-<name>", which is what makes an
+// object attributable to a recipe even after its photo_url is gone — and so
+// what makes recovering a wiped photo possible rather than guesswork.
+// ---------------------------------------------------------------------------
+
+type PhotoVerdict =
+  | "in_use" // the recipe's current photo — never touched
+  | "restorable" // recipe exists with no photo; best candidate to put back
+  | "superseded" // recipe has a different current photo, or a better candidate
+  | "dangling" // the recipe itself is gone
+  | "unattributable"; // key doesn't follow the recipes/<id>/ layout
+
+interface PhotoAuditEntry {
+  key: string;
+  size: number;
+  uploaded: string;
+  recipe_id: number | null;
+  recipe_title: string | null;
+  verdict: PhotoVerdict;
+}
+
+async function listAllPhotos(env: Env) {
+  const all: { key: string; size: number; uploaded: Date }[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await env.PHOTOS.list({ prefix: "recipes/", cursor });
+    all.push(...page.objects.map((o) => ({ key: o.key, size: o.size, uploaded: o.uploaded })));
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return all;
+}
+
+async function auditPhotos(env: Env) {
+  const objects = await listAllPhotos(env);
+  const { results: recipes } = await env.DB.prepare(
+    "SELECT id, title, photo_url FROM recipes"
+  ).all<{ id: number; title: string; photo_url: string | null }>();
+  const byId = new Map(recipes.map((r) => [r.id, r]));
+
+  const entries: PhotoAuditEntry[] = objects.map((o) => {
+    const match = o.key.match(/^recipes\/(\d+)\//);
+    if (!match) {
+      return {
+        key: o.key,
+        size: o.size,
+        uploaded: o.uploaded.toISOString(),
+        recipe_id: null,
+        recipe_title: null,
+        verdict: "unattributable" as PhotoVerdict,
+      };
+    }
+    const recipeId = Number(match[1]);
+    const recipe = byId.get(recipeId);
+    let verdict: PhotoVerdict;
+    if (!recipe) verdict = "dangling";
+    else if (recipe.photo_url === `/photos/${o.key}`) verdict = "in_use";
+    else if (recipe.photo_url == null) verdict = "restorable";
+    else verdict = "superseded";
+    return {
+      key: o.key,
+      size: o.size,
+      uploaded: o.uploaded.toISOString(),
+      recipe_id: recipeId,
+      recipe_title: recipe?.title ?? null,
+      verdict,
+    };
+  });
+
+  // A recipe with no photo may have several leftover objects. Only the most
+  // recent is worth putting back; the rest were already superseded before the
+  // photo_url was lost, so they'd have been deleted anyway.
+  const restorable = new Map<number, PhotoAuditEntry>();
+  for (const e of entries) {
+    if (e.verdict !== "restorable" || e.recipe_id == null) continue;
+    const best = restorable.get(e.recipe_id);
+    if (!best || e.uploaded > best.uploaded) restorable.set(e.recipe_id, e);
+  }
+  for (const e of entries) {
+    if (e.verdict === "restorable" && restorable.get(e.recipe_id!)?.key !== e.key) {
+      e.verdict = "superseded";
+    }
+  }
+
+  const remap = Array.from(restorable.values()).map((e) => ({
+    recipe_id: e.recipe_id!,
+    recipe_title: e.recipe_title,
+    photo_url: `/photos/${e.key}`,
+    uploaded: e.uploaded,
+  }));
+  const deletable = entries.filter(
+    (e) => e.verdict === "superseded" || e.verdict === "dangling"
+  );
+
+  return {
+    entries,
+    remap,
+    delete_keys: deletable.map((e) => e.key),
+    summary: {
+      total: entries.length,
+      in_use: entries.filter((e) => e.verdict === "in_use").length,
+      restorable: remap.length,
+      superseded: entries.filter((e) => e.verdict === "superseded").length,
+      dangling: entries.filter((e) => e.verdict === "dangling").length,
+      unattributable: entries.filter((e) => e.verdict === "unattributable").length,
+      reclaimed_bytes: deletable.reduce((n, e) => n + e.size, 0),
+    },
+  };
+}
+
+app.get("/api/maintenance/photo-audit", async (c) => c.json(await auditPhotos(c.env)));
+
+// Applies exactly what it is given — the keys and remappings the caller has
+// already seen — rather than recomputing a plan that might have drifted since.
+// Each deletion is re-checked against the live photo_url set first, so a key
+// that became someone's current photo between audit and apply survives
+// regardless of what the caller asked for.
+app.post("/api/maintenance/photo-cleanup", async (c) => {
+  const body = await c.req.json<{
+    delete_keys?: string[];
+    remap?: { recipe_id: number; photo_url: string }[];
+  }>();
+
+  const remapped: { recipe_id: number; photo_url: string }[] = [];
+  for (const entry of body.remap ?? []) {
+    if (!entry.photo_url?.startsWith("/photos/recipes/")) continue;
+    // Only fills a gap; never overwrites a photo the recipe already has.
+    const res = await c.env.DB.prepare(
+      "UPDATE recipes SET photo_url = ? WHERE id = ? AND photo_url IS NULL"
+    )
+      .bind(entry.photo_url, entry.recipe_id)
+      .run();
+    if (res.meta.changes) remapped.push(entry);
+  }
+
+  const { results: live } = await c.env.DB.prepare(
+    "SELECT photo_url FROM recipes WHERE photo_url IS NOT NULL"
+  ).all<{ photo_url: string }>();
+  const inUse = new Set(live.map((r) => r.photo_url));
+
+  const requested = (body.delete_keys ?? []).filter((k) => k.startsWith("recipes/"));
+  const deleted = requested.filter((k) => !inUse.has(`/photos/${k}`));
+  const skipped = requested.filter((k) => inUse.has(`/photos/${k}`));
+
+  // R2 caps a bulk delete at 1000 keys.
+  for (let i = 0; i < deleted.length; i += 1000) {
+    await c.env.PHOTOS.delete(deleted.slice(i, i + 1000));
+  }
+
+  return c.json({ remapped, deleted, skipped });
+});
+
 // Serves photos out of R2 (bound as PHOTOS) under /photos/*.
 app.get("/photos/*", async (c) => {
   const key = c.req.path.replace(/^\/photos\//, "");
