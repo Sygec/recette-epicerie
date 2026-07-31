@@ -6,6 +6,7 @@ import RecipeDetail from "./pages/RecipeDetail";
 import RecipeForm from "./pages/RecipeForm";
 import GroceryList from "./pages/GroceryList";
 import MealPlan from "./pages/MealPlan";
+import FoodDictionary from "./pages/FoodDictionary";
 import { getToken } from "./lib/api";
 
 function RequireAuth({ children }: { children: JSX.Element }) {
@@ -87,6 +88,14 @@ export default function App() {
             element={
               <RequireAuth>
                 <MealPlan />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/dictionnaire"
+            element={
+              <RequireAuth>
+                <FoodDictionary />
               </RequireAuth>
             }
           />

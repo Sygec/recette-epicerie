@@ -1,14 +1,38 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import {
+  DndContext,
+  DragEndEvent,
+  PointerSensor,
+  TouchSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
 import {
   ACTIVE_GROCERY_LIST_KEY,
   api,
   Category,
   GroceryItem,
   GroceryList as GroceryListType,
+  SortMode,
   Store,
   StoreCategoryOrderEntry,
 } from "../lib/api";
 import ListStoreManager from "../components/ListStoreManager";
+import GroceryItemRow from "../components/GroceryItemRow";
+import SortableGroceryItemRow from "../components/SortableGroceryItemRow";
+
+// Same identity rule the server matches on: a merge whose target name only
+// differs by case or accents isn't worth remarking on.
+function normalize(text: string): string {
+  return text.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
 
 interface CategoryGroup {
   categoryId: number | null;
@@ -30,9 +54,9 @@ export default function GroceryList() {
   const [newItemCategoryId, setNewItemCategoryId] = useState("");
   const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
   const [editingCategoryName, setEditingCategoryName] = useState("");
-  const [editingItemId, setEditingItemId] = useState<number | null>(null);
-  const [editingItemQuantity, setEditingItemQuantity] = useState("");
-  const [editingItemUnit, setEditingItemUnit] = useState("");
+  const [mergeNotice, setMergeNotice] = useState<{ typed: string; into: string } | null>(
+    null
+  );
   const [showManageModal, setShowManageModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -77,6 +101,7 @@ export default function GroceryList() {
   }, [activeListId]);
 
   const activeList = lists.find((l) => l.id === activeListId) ?? null;
+  const sortMode: SortMode = activeList?.sort_mode ?? "category";
 
   useEffect(() => {
     if (activeList?.store_id == null) {
@@ -97,13 +122,23 @@ export default function GroceryList() {
       return;
     }
     try {
-      await api.addGroceryItem({
-        name: newItemName.trim(),
+      const name = newItemName.trim();
+      const result = await api.addGroceryItem({
+        name,
         quantity,
         unit: newItemUnit.trim() || undefined,
         category_id: newItemCategoryId ? Number(newItemCategoryId) : undefined,
         list_id: activeListId,
       });
+      // Adding can fold into an existing line. That's usually what you want
+      // ("oignons" onto "onions"), but when the names differ it looks like
+      // the app ignored what was typed — which is exactly what happens with
+      // "sucre en poudre" landing on "sucre". Say so, and point at the fix.
+      setMergeNotice(
+        result.merged && normalize(result.merged_into ?? "") !== normalize(name)
+          ? { typed: name, into: result.merged_into ?? "" }
+          : null
+      );
       setNewItemName("");
       setNewItemQuantity("");
       setNewItemUnit("");
@@ -194,23 +229,14 @@ export default function GroceryList() {
     }
   }
 
-  function startEditingItem(item: GroceryItem) {
-    setEditingItemId(item.id);
-    setEditingItemQuantity(item.quantity != null ? String(item.quantity) : "");
-    setEditingItemUnit(item.unit ?? "");
-  }
-
-  async function saveEditingItem() {
-    const id = editingItemId;
-    setEditingItemId(null);
-    if (id == null) return;
-    const trimmedQuantity = editingItemQuantity.trim();
+  async function saveItemQuantity(id: number, rawQuantity: string, rawUnit: string) {
+    const trimmedQuantity = rawQuantity.trim();
     const quantity = trimmedQuantity ? Number(trimmedQuantity) : null;
     if (trimmedQuantity && Number.isNaN(quantity)) {
       setError("Quantité invalide");
       return;
     }
-    const unit = editingItemUnit.trim() || null;
+    const unit = rawUnit.trim() || null;
     setError(null);
     setItems((rows) => rows.map((r) => (r.id === id ? { ...r, quantity, unit } : r)));
     try {
@@ -220,6 +246,61 @@ export default function GroceryList() {
         err instanceof Error ? err.message : "Impossible de mettre à jour la quantité"
       );
       if (activeListId != null) refreshItems(activeListId); // undo the optimistic update by resyncing with the server
+    }
+  }
+
+  // The item moves to a different group, and group order is derived from the
+  // list's store order — so resync rather than patching local state, the
+  // same way renaming a category does.
+  async function changeItemCategory(
+    item: GroceryItem,
+    categoryId: number | null,
+    remember: boolean
+  ) {
+    setError(null);
+    try {
+      await api.updateGroceryItemCategory(item.id, categoryId, remember);
+      if (activeListId != null) await refreshItems(activeListId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Impossible de changer le rayon");
+    }
+  }
+
+  // A drag has to beat a tap: without a small activation distance, tapping
+  // the checkbox on a touch screen registers as a drag and the item never
+  // toggles. The delay does the same for the touch sensor.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 8 } })
+  );
+
+  async function changeSortMode(mode: SortMode) {
+    if (activeListId == null) return;
+    setError(null);
+    try {
+      await api.updateGroceryList(activeListId, { sort_mode: mode });
+      await Promise.all([refreshLists(), refreshItems(activeListId)]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Impossible de changer le tri");
+    }
+  }
+
+  async function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id || activeListId == null) return;
+
+    const from = items.findIndex((i) => i.id === active.id);
+    const to = items.findIndex((i) => i.id === over.id);
+    if (from === -1 || to === -1) return;
+
+    const reordered = arrayMove(items, from, to);
+    setItems(reordered);
+    setError(null);
+    try {
+      await api.reorderGroceryItems(activeListId, reordered.map((i) => i.id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Impossible de réordonner la liste");
+      refreshItems(activeListId); // undo the optimistic reorder by resyncing
     }
   }
 
@@ -271,6 +352,11 @@ export default function GroceryList() {
   // else falls back after it, in the categories' own default order. Once a
   // store's order has been edited once (see StoreManager), it covers every
   // category, so this fallback only matters for brand-new/untouched stores.
+  const sortedCategories = useMemo(
+    () => categories.slice().sort((a, b) => a.default_sort_order - b.default_sort_order),
+    [categories]
+  );
+
   const sortPosition = useMemo(() => {
     const overrides = new Map(storeOrder.map((e) => [e.category_id, e.sort_order]));
     return (categoryId: number | null): number => {
@@ -330,13 +416,24 @@ export default function GroceryList() {
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={() => setShowManageModal(true)}
-        className="mt-2 text-xs font-medium text-sage-dark hover:underline"
-      >
-        Gérer les listes et magasins
-      </button>
+      {/* Both of these manage the machinery behind the list rather than the
+          list itself, so they sit together here instead of taking a nav slot
+          — five tabs don't fit at phone width. */}
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+        <button
+          type="button"
+          onClick={() => setShowManageModal(true)}
+          className="text-xs font-medium text-sage-dark hover:underline"
+        >
+          Gérer les listes et magasins
+        </button>
+        <Link
+          to="/dictionnaire"
+          className="text-xs font-medium text-sage-dark hover:underline"
+        >
+          Dictionnaire des aliments
+        </Link>
+      </div>
       {showManageModal && (
         <ListStoreManager
           lists={lists}
@@ -389,14 +486,11 @@ export default function GroceryList() {
                 className="rounded-lg border border-line bg-white px-2 py-2.5 text-sm text-ink/70 focus:border-sage focus:outline-none"
               >
                 <option value="">Catégorie (auto)</option>
-                {categories
-                  .slice()
-                  .sort((a, b) => a.default_sort_order - b.default_sort_order)
-                  .map((cat) => (
-                    <option key={cat.id} value={cat.id}>
-                      {cat.name}
-                    </option>
-                  ))}
+                {sortedCategories.map((cat) => (
+                  <option key={cat.id} value={cat.id}>
+                    {cat.name}
+                  </option>
+                ))}
               </select>
               <button
                 type="submit"
@@ -407,6 +501,53 @@ export default function GroceryList() {
             </form>
           </div>
 
+          {mergeNotice && (
+            <div className="mt-3 flex items-start gap-2 rounded-card border border-mustard/40 bg-mustard/10 px-3 py-2 text-sm">
+              <p className="flex-1 text-ink/70">
+                « {mergeNotice.typed} » a été regroupé avec « {mergeNotice.into} » — l'app
+                les considère comme le même aliment.{" "}
+                <Link to="/dictionnaire" className="underline hover:text-sage-dark">
+                  Séparez-les dans le dictionnaire
+                </Link>{" "}
+                si ce n'est pas le cas.
+              </p>
+              <button
+                onClick={() => setMergeNotice(null)}
+                aria-label="Fermer"
+                className="text-ink/30 hover:text-ink"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
+          {items.length > 0 && (
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <span className="text-xs text-ink/40">Trier</span>
+              <div
+                role="group"
+                aria-label="Mode de tri"
+                className="flex overflow-hidden rounded-lg border border-line text-xs"
+              >
+                {(["category", "manual"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => changeSortMode(mode)}
+                    aria-pressed={sortMode === mode}
+                    className={`px-3 py-1.5 font-medium ${
+                      sortMode === mode
+                        ? "bg-sage text-white"
+                        : "bg-white text-ink/60 hover:text-ink"
+                    }`}
+                  >
+                    {mode === "category" ? "Rayons" : "Manuel"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {items.length === 0 ? (
             <div className="mt-16 text-center text-ink/50">
               <p className="font-display text-xl">Votre liste est vide</p>
@@ -414,6 +555,35 @@ export default function GroceryList() {
                 Ajoutez un article ci-dessus ou depuis une recette.
               </p>
             </div>
+          ) : sortMode === "manual" ? (
+            // One flat list, no aisle headers. Items keep their categories —
+            // they just aren't the sort key here, so the 🏷 control on each
+            // row still works and switching back to Rayons finds everything
+            // filed, including under this list's store order.
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleDragEnd}
+            >
+              <SortableContext
+                items={items.map((i) => i.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                <ul className="mt-4 divide-y divide-line rounded-card border border-line">
+                  {items.map((item) => (
+                    <SortableGroceryItemRow
+                      key={item.id}
+                      item={item}
+                      categories={sortedCategories}
+                      onToggle={handleToggle}
+                      onDelete={handleDelete}
+                      onSaveQuantity={saveItemQuantity}
+                      onChangeCategory={changeItemCategory}
+                    />
+                  ))}
+                </ul>
+              </SortableContext>
+            </DndContext>
           ) : (
             <div className="mt-6 space-y-6">
               {grouped.map((group) => (
@@ -454,85 +624,15 @@ export default function GroceryList() {
                   </div>
                   <ul className="mt-2 divide-y divide-line rounded-card border border-line bg-white/60">
                     {group.items.map((item) => (
-                      <li key={item.id} className="flex items-center gap-3 px-3 py-2.5">
-                        <button
-                          onClick={() => handleToggle(item)}
-                          aria-label={
-                            item.is_checked ? "Marquer comme non trouvé" : "Marquer comme trouvé"
-                          }
-                          className={`flex h-5 w-5 flex-shrink-0 items-center justify-center rounded border-2 ${
-                            item.is_checked
-                              ? "border-sage bg-sage text-white"
-                              : "border-line"
-                          }`}
-                        >
-                          {item.is_checked ? "✓" : ""}
-                        </button>
-                        <span
-                          className={`flex-1 text-sm ${
-                            item.is_checked ? "text-ink/30 line-through" : ""
-                          }`}
-                        >
-                          {item.name}
-                        </span>
-                        {editingItemId === item.id ? (
-                          <span
-                            className="flex flex-shrink-0 items-center gap-1"
-                            onBlur={(e) => {
-                              // Tabbing from the quantity field to the unit field
-                              // fires a blur on the quantity input too — only
-                              // save once focus actually leaves both fields,
-                              // otherwise the fields unmount mid-edit.
-                              if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-                                saveEditingItem();
-                              }
-                            }}
-                          >
-                            <input
-                              autoFocus
-                              value={editingItemQuantity}
-                              onChange={(e) => setEditingItemQuantity(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") e.currentTarget.blur();
-                                if (e.key === "Escape") setEditingItemId(null);
-                              }}
-                              placeholder="Qté"
-                              aria-label="Quantité"
-                              inputMode="decimal"
-                              className="w-12 rounded border border-sage bg-white px-1 py-0.5 text-right font-mono text-xs focus:outline-none"
-                            />
-                            <input
-                              value={editingItemUnit}
-                              onChange={(e) => setEditingItemUnit(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") e.currentTarget.blur();
-                                if (e.key === "Escape") setEditingItemId(null);
-                              }}
-                              placeholder="Unité"
-                              aria-label="Unité"
-                              className="w-16 rounded border border-sage bg-white px-1 py-0.5 font-mono text-xs focus:outline-none"
-                            />
-                          </span>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => startEditingItem(item)}
-                            title="Cliquer pour modifier la quantité"
-                            className="flex-shrink-0 font-mono text-xs text-ink/50 hover:text-sage-dark"
-                          >
-                            {item.quantity != null || item.unit
-                              ? `${item.quantity ?? ""} ${item.unit ?? ""}`.trim()
-                              : "+ qté"}
-                          </button>
-                        )}
-                        <button
-                          onClick={() => handleDelete(item.id)}
-                          aria-label="Supprimer l'article"
-                          className="text-ink/30 hover:text-brick"
-                        >
-                          ✕
-                        </button>
-                      </li>
+                      <GroceryItemRow
+                        key={item.id}
+                        item={item}
+                        categories={sortedCategories}
+                        onToggle={handleToggle}
+                        onDelete={handleDelete}
+                        onSaveQuantity={saveItemQuantity}
+                        onChangeCategory={changeItemCategory}
+                      />
                     ))}
                   </ul>
                 </section>

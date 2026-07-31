@@ -14,6 +14,7 @@ import {
   loadAliasRows,
   matchFood,
   normalizeFoodIdentity,
+  normalizeFoodText,
   updateNameConversionNote,
 } from "./foodDictionary";
 
@@ -763,6 +764,227 @@ app.put("/api/stores/:id/category-order", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// Food dictionary — user-editable
+//
+// The dictionary decides two things: which aisle an item lands in, and which
+// items merge into one line. Both used to be fixed at seed time, so a wrong
+// or missing entry could only be corrected by editing schema.sql and running
+// wrangler d1 execute. These routes make it editable from the app.
+//
+// The matching rule itself (see matchFood) is deliberately unchanged: it is
+// word-bounded containment with longest-alias-wins, which is what lets a
+// recipe line like "1 tasse de crème sure, à température ambiante" resolve
+// to "crème sure". The consequence is that an unqualified alias swallows its
+// own compounds — "sucre en poudre" matches the alias "sucre" — and the fix
+// for that is to give the compound its own entry here, at which point the
+// longer alias wins. That is the main thing these routes exist for.
+// ---------------------------------------------------------------------------
+
+interface AliasConflict {
+  alias: string;
+  canonical_name: string;
+}
+
+// food_aliases.alias is UNIQUE across the whole table, so a clash is always
+// with some other food's alias. Look up which one, so the error can name it
+// instead of surfacing a bare constraint failure.
+async function findAliasConflict(
+  db: D1Database,
+  alias: string,
+  ignoreFoodId?: number
+): Promise<AliasConflict | null> {
+  const row = await db
+    .prepare(
+      `SELECT fa.alias AS alias, fa.food_id AS food_id, fd.canonical_name AS canonical_name
+       FROM food_aliases fa
+       JOIN food_dictionary fd ON fd.id = fa.food_id
+       WHERE fa.alias = ?`
+    )
+    .bind(alias)
+    .first<{ alias: string; food_id: number; canonical_name: string }>();
+  if (!row) return null;
+  if (ignoreFoodId != null && row.food_id === ignoreFoodId) return null;
+  return { alias: row.alias, canonical_name: row.canonical_name };
+}
+
+function aliasConflictMessage(conflict: AliasConflict): string {
+  return `« ${conflict.alias} » est déjà un synonyme de « ${conflict.canonical_name} »`;
+}
+
+app.get("/api/foods", async (c) => {
+  // Two queries stitched together in JS rather than one grouped query:
+  // SQLite has no json_agg, and GROUP_CONCAT would need escaping to survive
+  // an alias containing the separator. The whole dictionary is small enough
+  // to send in one response.
+  const [foods, aliases] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT fd.id, fd.canonical_name, fd.category_id, c.name AS category_name
+       FROM food_dictionary fd
+       LEFT JOIN categories c ON c.id = fd.category_id
+       ORDER BY fd.canonical_name COLLATE NOCASE`
+    ).all<{
+      id: number;
+      canonical_name: string;
+      category_id: number | null;
+      category_name: string | null;
+    }>(),
+    c.env.DB.prepare(
+      "SELECT id, food_id, alias, lang FROM food_aliases ORDER BY alias COLLATE NOCASE"
+    ).all<{ id: number; food_id: number; alias: string; lang: string }>(),
+  ]);
+
+  const byFood = new Map<number, { id: number; alias: string; lang: string }[]>();
+  for (const row of aliases.results) {
+    const list = byFood.get(row.food_id) ?? [];
+    list.push({ id: row.id, alias: row.alias, lang: row.lang });
+    byFood.set(row.food_id, list);
+  }
+
+  return c.json(
+    foods.results.map((food) => ({ ...food, aliases: byFood.get(food.id) ?? [] }))
+  );
+});
+
+interface FoodPayload {
+  canonical_name: string;
+  category_id?: number | null;
+  lang?: string;
+}
+
+app.post("/api/foods", async (c) => {
+  const body = await c.req.json<FoodPayload>();
+  // Aliases are stored lowercased and whitespace-collapsed (matching the
+  // seed), so the UNIQUE constraint catches "Sucre" vs "sucre" — which
+  // matchFood would treat as the same word anyway.
+  const name = normalizeFoodText(body.canonical_name ?? "");
+  if (!name) return c.json({ error: "Le nom de l'aliment est obligatoire" }, 400);
+
+  // matchFood only ever scans food_aliases, so a food with no alias can
+  // never match anything the user types. The canonical name is inserted as
+  // its first alias or the new entry would be inert.
+  const conflict = await findAliasConflict(c.env.DB, name);
+  if (conflict) return c.json({ error: aliasConflictMessage(conflict) }, 409);
+
+  const result = await c.env.DB.prepare(
+    "INSERT INTO food_dictionary (canonical_name, category_id) VALUES (?, ?)"
+  )
+    .bind(name, body.category_id ?? null)
+    .run();
+  const foodId = result.meta.last_row_id as number;
+
+  await c.env.DB.prepare("INSERT INTO food_aliases (food_id, alias, lang) VALUES (?, ?, ?)")
+    .bind(foodId, name, body.lang ?? "fr")
+    .run();
+
+  return c.json({ id: foodId }, 201);
+});
+
+// Renaming a food deliberately leaves its aliases alone — they are what the
+// matcher actually reads, and the old name usually still needs to match.
+app.patch("/api/foods/:id", async (c) => {
+  const id = c.req.param("id");
+  const body = await c.req.json<Partial<FoodPayload>>();
+
+  if (body.canonical_name !== undefined) {
+    const name = normalizeFoodText(body.canonical_name);
+    if (!name) return c.json({ error: "Le nom de l'aliment est obligatoire" }, 400);
+    await c.env.DB.prepare("UPDATE food_dictionary SET canonical_name = ? WHERE id = ?")
+      .bind(name, id)
+      .run();
+  }
+
+  if (body.category_id !== undefined) {
+    if (body.category_id !== null) {
+      const category = await c.env.DB.prepare("SELECT id FROM categories WHERE id = ?")
+        .bind(body.category_id)
+        .first<{ id: number }>();
+      if (!category) return c.json({ error: "Catégorie introuvable" }, 400);
+    }
+    await c.env.DB.prepare("UPDATE food_dictionary SET category_id = ? WHERE id = ?")
+      .bind(body.category_id, id)
+      .run();
+  }
+
+  return c.json({ ok: true });
+});
+
+app.delete("/api/foods/:id", async (c) => {
+  const id = c.req.param("id");
+
+  // Grocery items point at the food; clear the reference rather than
+  // orphaning it. Their name and category stay as they are — deleting a
+  // dictionary entry shouldn't rewrite the list the user is shopping from.
+  // Aliases are deleted explicitly rather than relying on ON DELETE CASCADE
+  // firing.
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE grocery_items SET food_id = NULL WHERE food_id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM food_aliases WHERE food_id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM food_dictionary WHERE id = ?").bind(id),
+  ]);
+
+  return c.json({ ok: true });
+});
+
+app.post("/api/foods/:id/aliases", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json<{ alias: string; lang?: string }>();
+  const alias = normalizeFoodText(body.alias ?? "");
+  if (!alias) return c.json({ error: "Le synonyme est obligatoire" }, 400);
+
+  const food = await c.env.DB.prepare("SELECT id FROM food_dictionary WHERE id = ?")
+    .bind(id)
+    .first<{ id: number }>();
+  if (!food) return c.json({ error: "Aliment introuvable" }, 404);
+
+  const conflict = await findAliasConflict(c.env.DB, alias, id);
+  if (conflict) return c.json({ error: aliasConflictMessage(conflict) }, 409);
+
+  // Already on this food — nothing to do, and re-inserting would trip the
+  // UNIQUE constraint.
+  const existing = await c.env.DB.prepare(
+    "SELECT id FROM food_aliases WHERE alias = ? AND food_id = ?"
+  )
+    .bind(alias, id)
+    .first<{ id: number }>();
+  if (existing) return c.json({ id: existing.id }, 200);
+
+  const result = await c.env.DB.prepare(
+    "INSERT INTO food_aliases (food_id, alias, lang) VALUES (?, ?, ?)"
+  )
+    .bind(id, alias, body.lang ?? "fr")
+    .run();
+
+  return c.json({ id: result.meta.last_row_id }, 201);
+});
+
+app.delete("/api/aliases/:id", async (c) => {
+  const id = c.req.param("id");
+
+  const alias = await c.env.DB.prepare("SELECT food_id FROM food_aliases WHERE id = ?")
+    .bind(id)
+    .first<{ food_id: number }>();
+  if (!alias) return c.json({ error: "Synonyme introuvable" }, 404);
+
+  // A food with no aliases is invisible to matchFood — it would still occupy
+  // a row but could never be matched again. Deleting the food is the way to
+  // get rid of it, not stripping its last alias.
+  const remaining = await c.env.DB.prepare(
+    "SELECT COUNT(*) AS count FROM food_aliases WHERE food_id = ?"
+  )
+    .bind(alias.food_id)
+    .first<{ count: number }>();
+  if ((remaining?.count ?? 0) <= 1) {
+    return c.json(
+      { error: "Un aliment doit garder au moins un synonyme — supprimez l'aliment." },
+      400
+    );
+  }
+
+  await c.env.DB.prepare("DELETE FROM food_aliases WHERE id = ?").bind(id).run();
+  return c.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
 // Grocery lists — one per store (Phase 3), replacing the single implicit
 // list Phase 1/2 assumed. Every grocery-item route below now takes an
 // explicit list_id instead of resolving one automatically.
@@ -781,7 +1003,14 @@ app.get("/api/grocery-lists", async (c) => {
 interface GroceryListPayload {
   name: string;
   store_id?: number | null;
+  // 'category' groups by aisle (using the store's order when it has one);
+  // 'manual' is one flat list the user drags into shape. Per list, not
+  // global — a Costco list can be manual while the IGA list stays by aisle.
+  sort_mode?: SortMode;
 }
+
+const SORT_MODES = ["category", "manual"] as const;
+type SortMode = (typeof SORT_MODES)[number];
 
 app.post("/api/grocery-lists", async (c) => {
   const body = await c.req.json<GroceryListPayload>();
@@ -801,18 +1030,25 @@ app.put("/api/grocery-lists/:id", async (c) => {
   const body = await c.req.json<Partial<GroceryListPayload>>();
 
   const existing = await c.env.DB.prepare(
-    "SELECT name, store_id FROM grocery_lists WHERE id = ?"
+    "SELECT name, store_id, sort_mode FROM grocery_lists WHERE id = ?"
   )
     .bind(id)
-    .first<{ name: string; store_id: number | null }>();
+    .first<{ name: string; store_id: number | null; sort_mode: SortMode }>();
   if (!existing) return c.json({ error: "Liste introuvable" }, 404);
 
   const name = body.name !== undefined ? body.name.trim() : existing.name;
   if (!name) return c.json({ error: "Le nom de la liste est obligatoire" }, 400);
   const storeId = body.store_id !== undefined ? body.store_id : existing.store_id;
 
-  await c.env.DB.prepare("UPDATE grocery_lists SET name = ?, store_id = ? WHERE id = ?")
-    .bind(name, storeId, id)
+  if (body.sort_mode !== undefined && !SORT_MODES.includes(body.sort_mode)) {
+    return c.json({ error: "Mode de tri inconnu" }, 400);
+  }
+  const sortMode = body.sort_mode !== undefined ? body.sort_mode : existing.sort_mode;
+
+  await c.env.DB.prepare(
+    "UPDATE grocery_lists SET name = ?, store_id = ?, sort_mode = ? WHERE id = ?"
+  )
+    .bind(name, storeId, sortMode, id)
     .run();
   return c.json({ ok: true });
 });
@@ -832,16 +1068,80 @@ app.get("/api/grocery-items", async (c) => {
   const listId = c.req.query("list_id");
   if (!listId) return c.json({ error: "list_id est requis" }, 400);
 
+  const list = await c.env.DB.prepare("SELECT sort_mode FROM grocery_lists WHERE id = ?")
+    .bind(listId)
+    .first<{ sort_mode: string }>();
+
+  // In manual mode the user's own order is the only thing that matters, so
+  // the aisle join is only for display. Items predating the position
+  // backfill sort by id, which is the order they were added.
+  //
+  // Category mode keeps the aisle order the client then re-sorts by the
+  // list's store order (see the grouping in GroceryList). COALESCE, because
+  // an uncategorized item joins to a NULL sort order and SQLite sorts NULLs
+  // first in ASC — which put "Autres / Non classé" at the TOP of the list.
+  // It belongs at the bottom, especially now that items can be moved into
+  // that bucket deliberately.
+  const orderBy =
+    list?.sort_mode === "manual"
+      ? "COALESCE(gi.position, 999999) ASC, gi.id ASC"
+      : "COALESCE(c.default_sort_order, 999) ASC, gi.id ASC";
+
   const { results } = await c.env.DB.prepare(
     `SELECT gi.*, c.name AS category_name, c.default_sort_order, c.is_custom AS category_is_custom
      FROM grocery_items gi
      LEFT JOIN categories c ON c.id = gi.category_id
      WHERE gi.list_id = ?
-     ORDER BY c.default_sort_order ASC, gi.id ASC`
+     ORDER BY ${orderBy}`
   )
     .bind(listId)
     .all();
   return c.json(results);
+});
+
+// Rewrites one list's order as a dense 1..N sequence. Sending the full order
+// rather than a single moved item keeps the client and server from
+// disagreeing about what the neighbouring positions were, and with a list
+// this size the extra statements cost nothing.
+//
+// The full order really is required: renumbering a subset from 1 would give
+// those items positions that already belong to the items left out, and the
+// list would come back interleaved. A payload that doesn't cover the list
+// exactly once is rejected rather than half-applied — it means the client
+// was working from a stale list, and refetching is the right recovery.
+app.put("/api/grocery-lists/:id/order", async (c) => {
+  const listId = c.req.param("id");
+  const body = await c.req.json<{ ids?: number[] }>();
+  if (!Array.isArray(body.ids)) {
+    return c.json({ error: "Un ordre est attendu" }, 400);
+  }
+
+  const { results } = await c.env.DB.prepare(
+    "SELECT id FROM grocery_items WHERE list_id = ?"
+  )
+    .bind(listId)
+    .all<{ id: number }>();
+  const inList = new Set(results.map((row) => row.id));
+
+  const seen = new Set(body.ids);
+  if (
+    seen.size !== body.ids.length ||
+    seen.size !== inList.size ||
+    body.ids.some((id) => !inList.has(id))
+  ) {
+    return c.json({ error: "L'ordre envoyé ne correspond plus à la liste" }, 409);
+  }
+
+  await c.env.DB.batch(
+    body.ids.map((id, index) =>
+      c.env.DB.prepare("UPDATE grocery_items SET position = ? WHERE id = ?").bind(
+        index + 1,
+        id
+      )
+    )
+  );
+
+  return c.json({ ok: true });
 });
 
 interface GroceryItemPayload {
@@ -921,12 +1221,22 @@ app.post("/api/grocery-items", async (c) => {
     await c.env.DB.prepare("UPDATE grocery_items SET quantity = ?, name = ? WHERE id = ?")
       .bind(target.mergedQuantity, updatedName, target.row.id)
       .run();
-    return c.json({ id: target.row.id }, 200);
+    // Report the merge rather than just returning an id. The incoming name
+    // is intentionally discarded here (the existing line keeps its own), but
+    // when the two names differ — "sucre en poudre" folding into "sucre" —
+    // that looks like the app ignored what was typed. The caller uses this
+    // to say what happened and point at the food dictionary, where giving
+    // the more specific name its own entry separates the two for good.
+    return c.json({ id: target.row.id, merged: true, merged_into: updatedName }, 200);
   }
 
+  // New items land at the end of the manual order. A merge (above) returns
+  // before this and leaves the target's position untouched, so absorbing a
+  // duplicate never moves a line the user placed deliberately.
   const result = await c.env.DB.prepare(
-    `INSERT INTO grocery_items (list_id, name, quantity, unit, category_id, recipe_id, food_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO grocery_items (list_id, name, quantity, unit, category_id, recipe_id, food_id, position)
+     VALUES (?, ?, ?, ?, ?, ?, ?,
+             (SELECT COALESCE(MAX(position), 0) + 1 FROM grocery_items WHERE list_id = ?))`
   )
     .bind(
       listId,
@@ -935,7 +1245,8 @@ app.post("/api/grocery-items", async (c) => {
       unit,
       categoryId,
       body.recipe_id ?? null,
-      foodId
+      foodId,
+      listId
     )
     .run();
 
@@ -948,6 +1259,8 @@ app.patch("/api/grocery-items/:id", async (c) => {
     is_checked?: boolean;
     quantity?: number | null;
     unit?: string | null;
+    category_id?: number | null;
+    remember_category?: boolean;
   }>();
 
   if (body.is_checked !== undefined) {
@@ -978,6 +1291,46 @@ app.patch("/api/grocery-items/:id", async (c) => {
     )
       .bind(newQuantity, newUnit, updatedName, id)
       .run();
+  }
+
+  // Manual aisle correction. An explicit null moves the item to the
+  // "Autres / Non classé" bucket, which is stored as NULL rather than as
+  // category 17 — same reasoning as the category delete handler above.
+  if (body.category_id !== undefined) {
+    if (body.category_id !== null) {
+      const category = await c.env.DB.prepare("SELECT id FROM categories WHERE id = ?")
+        .bind(body.category_id)
+        .first<{ id: number }>();
+      if (!category) return c.json({ error: "Catégorie introuvable" }, 400);
+    }
+
+    const statements = [
+      c.env.DB.prepare("UPDATE grocery_items SET category_id = ? WHERE id = ?").bind(
+        body.category_id,
+        id
+      ),
+    ];
+
+    // Opt-in: re-file the underlying food too, so future adds land in the
+    // corrected aisle. Without this the category is re-derived from the
+    // dictionary on every add (see POST above) and the correction lasts
+    // only as long as this one row. Items with no dictionary match have
+    // nothing to teach, so the flag is a no-op for them.
+    if (body.remember_category) {
+      const row = await c.env.DB.prepare("SELECT food_id FROM grocery_items WHERE id = ?")
+        .bind(id)
+        .first<{ food_id: number | null }>();
+      if (row?.food_id != null) {
+        statements.push(
+          c.env.DB.prepare("UPDATE food_dictionary SET category_id = ? WHERE id = ?").bind(
+            body.category_id,
+            row.food_id
+          )
+        );
+      }
+    }
+
+    await c.env.DB.batch(statements);
   }
 
   return c.json({ ok: true });

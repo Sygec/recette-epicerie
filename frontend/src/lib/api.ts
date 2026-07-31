@@ -164,7 +164,7 @@ export const api = {
 
   updateGroceryList: (
     id: number,
-    payload: { name?: string; store_id?: number | null }
+    payload: { name?: string; store_id?: number | null; sort_mode?: SortMode }
   ) =>
     request<{ ok: true }>(`/api/grocery-lists/${id}`, {
       method: "PUT",
@@ -185,7 +185,7 @@ export const api = {
     recipe_id?: number;
     list_id: number;
   }) =>
-    request<{ id: number }>("/api/grocery-items", {
+    request<AddGroceryItemResult>("/api/grocery-items", {
       method: "POST",
       body: JSON.stringify(payload),
     }),
@@ -201,6 +201,52 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ quantity, unit }),
     }),
+
+  // `category_id: null` files the item under "Autres / Non classé".
+  // `remember` also re-files the underlying food in the dictionary, so
+  // future adds of the same item land in this aisle too.
+  updateGroceryItemCategory: (
+    id: number,
+    category_id: number | null,
+    remember: boolean
+  ) =>
+    request<{ ok: true }>(`/api/grocery-items/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ category_id, remember_category: remember }),
+    }),
+
+  // The full order, not a single move — see the endpoint's note.
+  reorderGroceryItems: (listId: number, ids: number[]) =>
+    request<{ ok: true }>(`/api/grocery-lists/${listId}/order`, {
+      method: "PUT",
+      body: JSON.stringify({ ids }),
+    }),
+
+  getFoods: () => request<Food[]>("/api/foods"),
+
+  createFood: (canonical_name: string, category_id: number | null, lang: string) =>
+    request<{ id: number }>("/api/foods", {
+      method: "POST",
+      body: JSON.stringify({ canonical_name, category_id, lang }),
+    }),
+
+  updateFood: (id: number, payload: { canonical_name?: string; category_id?: number | null }) =>
+    request<{ ok: true }>(`/api/foods/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+
+  deleteFood: (id: number) =>
+    request<{ ok: true }>(`/api/foods/${id}`, { method: "DELETE" }),
+
+  addFoodAlias: (foodId: number, alias: string, lang: string) =>
+    request<{ id: number }>(`/api/foods/${foodId}/aliases`, {
+      method: "POST",
+      body: JSON.stringify({ alias, lang }),
+    }),
+
+  deleteFoodAlias: (aliasId: number) =>
+    request<{ ok: true }>(`/api/aliases/${aliasId}`, { method: "DELETE" }),
 
   deleteGroceryItem: (id: number) =>
     request<{ ok: true }>(`/api/grocery-items/${id}`, { method: "DELETE" }),
@@ -319,11 +365,17 @@ export interface StoreCategoryOrderEntry {
   sort_order: number;
 }
 
+// "category" groups the list by aisle (using the store's order when the list
+// has a store); "manual" is one flat list in the order the user dragged
+// things into. Per list, so one store can be manual and another by aisle.
+export type SortMode = "category" | "manual";
+
 export interface GroceryList {
   id: number;
   name: string;
   store_id: number | null;
   store_name: string | null;
+  sort_mode: SortMode;
   created_at: string;
 }
 
@@ -339,6 +391,29 @@ export interface MealPlanEntry {
   ingredients: Ingredient[];
 }
 
+export interface FoodAlias {
+  id: number;
+  alias: string;
+  lang: string;
+}
+
+export interface Food {
+  id: number;
+  canonical_name: string;
+  category_id: number | null;
+  category_name: string | null;
+  aliases: FoodAlias[];
+}
+
+// Adding an item can fold into an existing line instead of creating a new
+// one. When it does, `merged_into` is the name of the line that absorbed it —
+// which may differ from what was typed.
+export interface AddGroceryItemResult {
+  id: number;
+  merged?: boolean;
+  merged_into?: string;
+}
+
 export interface GroceryItem {
   id: number;
   list_id: number;
@@ -349,5 +424,9 @@ export interface GroceryItem {
   category_name: string | null;
   category_is_custom: number | null;
   recipe_id: number | null;
+  // The dictionary entry this item matched, if any. Null means the name
+  // wasn't recognized — such an item has no food to teach, so the
+  // "remember this aisle" option doesn't apply to it.
+  food_id: number | null;
   is_checked: number;
 }

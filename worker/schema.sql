@@ -105,6 +105,11 @@ CREATE TABLE IF NOT EXISTS grocery_lists (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL DEFAULT 'Liste de courses',
   store_id INTEGER REFERENCES stores(id),
+  -- 'category' groups by aisle, using the store's own order when it has one;
+  -- 'manual' is one flat list in whatever order the user dragged things
+  -- into. Per list, so a Costco list can be manual while the IGA list stays
+  -- grouped by aisle.
+  sort_mode TEXT NOT NULL DEFAULT 'category',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -117,6 +122,10 @@ CREATE TABLE IF NOT EXISTS grocery_items (
   category_id INTEGER REFERENCES categories(id),
   recipe_id INTEGER REFERENCES recipes(id),
   food_id INTEGER REFERENCES food_dictionary(id),
+  -- Rank within its list when the list's sort_mode is 'manual'. Rewritten as
+  -- a dense 1..N sequence on every reorder — a list is small enough that
+  -- this beats gap or fractional indexing, and it can't drift.
+  position INTEGER,
   is_checked INTEGER NOT NULL DEFAULT 0
 );
 
