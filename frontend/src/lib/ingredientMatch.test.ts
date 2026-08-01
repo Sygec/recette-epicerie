@@ -259,6 +259,55 @@ describe("segmentStep", () => {
     });
   });
 
+  // A French import: descriptors agree in number with the noun, so an
+  // exact-match qualifier list let every plural through — "entiers" slipped
+  // past even though "entier" was listed.
+  describe("an imported macaroni chili", () => {
+    const chili = [
+      "Dindon du Québec, haché",
+      "Oignon moyen, coupé en petits dés",
+      "Poudre de chili (2 c. à soupe)",
+      "Ail émincé (1 c. à thé)",
+      "Haricots rouges en conserve, rincés (19 oz)",
+      "Sauce tomate (1 3/4 tasse)",
+      "Bouillon de légumes ou de volaille faible en sodium (3 1/2 tasses)",
+      "Macaroni de grains entiers sec (3 tasses; 340 à 375 g)",
+      "Lait (1/2 tasse)",
+      "Fromage cheddar râpé (2 tasses)",
+    ].map((name, i) => ({ id: i + 1, name }));
+
+    const words = (text: string) =>
+      segmentStep(text, chili)
+        .filter((s) => s.ingredientIds?.length)
+        .map((s) => s.text);
+
+    it("does not highlight a French descriptor on its own", () => {
+      // "sec" and "moyen" were both reported as bad highlights.
+      expect(words("Cuire le macaroni sec dans un grand chaudron.")).toEqual(["macaroni"]);
+      // The whole name appearing verbatim is the right match here; what must
+      // not happen is "moyen" highlighting by itself.
+      expect(words("Hacher un oignon moyen.")).toEqual(["oignon moyen"]);
+      expect(words("Un plat de taille moyenne.")).toEqual([]);
+      expect(words("Un bouillon faible en sodium fonctionne bien.")).toEqual(["bouillon"]);
+      // "grains entiers" is genuinely part of the name, so matching it whole
+      // is right; the point is that "entiers" alone never does.
+      expect(words("Des grains entiers, rincés et égouttés.")).toEqual([
+        "grains entiers",
+      ]);
+      expect(words("Utiliser des pâtes entières.")).toEqual([]);
+    });
+
+    it("still finds the ingredients themselves", () => {
+      expect(
+        words("Ajouter la sauce tomate, les haricots rouges et le bouillon.")
+      ).toEqual(["sauce tomate", "haricots rouges", "bouillon"]);
+      expect(words("Incorporer le lait et le fromage cheddar râpé.")).toEqual([
+        "lait",
+        "fromage cheddar râpé",
+      ]);
+    });
+  });
+
   it("handles a step with no mentions", () => {
     const segments = segmentStep("Préchauffer le four à 200 °C.", ingredients);
     expect(segments).toEqual([{ text: "Préchauffer le four à 200 °C." }]);

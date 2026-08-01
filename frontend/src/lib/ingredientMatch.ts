@@ -74,6 +74,14 @@ const QUALIFIERS = new Set([
   "rape", "rapee", "fondu", "fondue", "tiede", "entier", "entiere", "sale",
   "salee", "doux", "douce", "sure", "tempere", "ambiante", "cuit", "cuite",
   "cru", "crue", "mur", "mure", "facultatif", "coupe", "coupee",
+  "moyen", "moyenne", "sec", "seche", "emince", "emincee", "faible", "riche",
+  "conserve", "sodium", "denoyaute", "denoyautee", "epluche", "epluchee",
+  "egoutte", "egouttee", "rince", "rincee", "surgele", "surgelee", "nature",
+  // Colours describe a variety rather than name one: "haricots rouges" is an
+  // ingredient, a bare "rouges" is not. "jaune" and "blanc" are deliberately
+  // absent — in French they are also the nouns for yolk and white, so
+  // treating them as descriptors loses "les jaunes" and "les blancs".
+  "rouge", "vert", "verte", "noir", "noire", "brun", "brune", "dore", "doree",
   // Counting words, which show up in imported names like "two 9-inch pans"
   "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
   "un", "une", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf", "dix",
@@ -122,6 +130,27 @@ function nameVariants(name: string): string[] {
     .filter(Boolean);
 }
 
+// Whether a word names something rather than describing it. Checked in both
+// numbers, since French agreement puts descriptors in the plural ("grains
+// entiers", "haricots rouges") and an exact-match list would let every plural
+// form through.
+function isContentWord(word: string): boolean {
+  const bare = word.replace(/['’]$/, "");
+  return (
+    !EDGE_STOPWORDS.has(bare) &&
+    !QUALIFIERS.has(bare) &&
+    !QUALIFIERS.has(singularWord(bare))
+  );
+}
+
+// The singular of a word, for looking it up in a list that stores base
+// forms. Deliberately crude — it only has to undo French and English plural
+// agreement, not conjugate anything.
+function singularWord(word: string): string {
+  if (word.length > 4 && word.endsWith("ies")) return `${word.slice(0, -3)}y`;
+  return word.length > 3 && word.endsWith("s") ? word.slice(0, -1) : word;
+}
+
 // Matches a word in either number: "cream(s)", "cherry/cherries". Guarded by
 // length so short words aren't mangled — this must not turn "jus" into "ju".
 function numberAgnostic(escaped: string): string {
@@ -157,12 +186,12 @@ export function buildTerms(name: string): string[] {
         // Measurements that leaked into a name ("two 9-inch cake pans") are
         // not something a step refers to by number.
         if (slice.some((word) => /\d/.test(word))) continue;
-        if (slice.length === 1) {
-          const word = slice[0];
-          // A lone word must plausibly name a food: long enough to be
-          // distinctive, and not a pure descriptor.
-          if (word.length < 3 || QUALIFIERS.has(word)) continue;
-        }
+        // Every phrase needs at least one word that names something. Without
+        // this, a run of pure description like "faible en sodium" or "full
+        // fat" is offered as though it were an ingredient.
+        if (!slice.some(isContentWord)) continue;
+        // A lone word must also be long enough to be distinctive.
+        if (slice.length === 1 && slice[0].length < 3) continue;
         terms.add(slice.join(" "));
       }
     }
