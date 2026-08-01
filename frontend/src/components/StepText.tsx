@@ -32,12 +32,10 @@ function amountLabel(ing: StepIngredient): string {
 // Mounted fresh per mention, so the offset always starts from zero.
 function MentionTooltip({
   id,
-  amount,
-  name,
+  candidates,
 }: {
   id: string;
-  amount: string;
-  name: string;
+  candidates: StepIngredient[];
 }) {
   const ref = useRef<HTMLSpanElement>(null);
   const [shift, setShift] = useState(0);
@@ -71,8 +69,14 @@ function MentionTooltip({
                  rounded-card border border-line bg-white px-2 py-1 text-left
                  text-xs font-normal leading-snug text-ink shadow-lg shadow-ink/10"
     >
-      <span className="block font-mono font-medium text-sage-dark">{amount}</span>
-      <span className="block text-ink/60">{name}</span>
+      {candidates.map((ing, i) => (
+        <span key={i} className={i > 0 ? "mt-1 block border-t border-line pt-1" : "block"}>
+          <span className="block font-mono font-medium text-sage-dark">
+            {amountLabel(ing)}
+          </span>
+          <span className="block text-ink/60">{ing.name}</span>
+        </span>
+      ))}
     </span>
   );
 }
@@ -106,9 +110,10 @@ export default function StepText({
   return (
     <p className="text-sm leading-relaxed">
       {segments.map((segment, index) => {
-        const ingredient =
-          segment.ingredientId != null ? byId.get(segment.ingredientId) : undefined;
-        if (!ingredient) return <span key={index}>{segment.text}</span>;
+        const candidates = (segment.ingredientIds ?? [])
+          .map((id) => byId.get(id))
+          .filter((ing): ing is StepIngredient => ing != null);
+        if (!candidates.length) return <span key={index}>{segment.text}</span>;
 
         const key = `${stepId}:${index}`;
         const isOpen = openKey === key;
@@ -143,18 +148,16 @@ export default function StepText({
               }}
               onBlur={() => onOpenChange(null)}
               aria-describedby={isOpen ? `tip-${key}` : undefined}
-              aria-label={`${segment.text} — ${amountLabel(ingredient)}`}
+              aria-label={`${segment.text} — ${candidates
+                .map((ing) => `${amountLabel(ing)} ${ing.name}`)
+                .join(" ; ")}`}
               className="rounded bg-mustard/25 px-0.5 font-medium decoration-mustard-dark/60 decoration-dotted underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sage"
             >
               {segment.text}
             </button>
 
             {isOpen && (
-              <MentionTooltip
-                id={`tip-${key}`}
-                amount={amountLabel(ingredient)}
-                name={ingredient.name}
-              />
+              <MentionTooltip id={`tip-${key}`} candidates={candidates} />
             )}
           </span>
         );

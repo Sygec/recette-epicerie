@@ -5,8 +5,8 @@ import { buildTerms, fold, segmentStep } from "./ingredientMatch";
 // literal text that got highlighted.
 function marks(text: string, ingredients: { id: number; name: string }[]) {
   return segmentStep(text, ingredients)
-    .filter((s) => s.ingredientId != null)
-    .map((s) => `${s.ingredientId}:${s.text}`);
+    .filter((s) => s.ingredientIds?.length)
+    .map((s) => `${s.ingredientIds!.join("+")}:${s.text}`);
 }
 
 describe("fold", () => {
@@ -169,16 +169,94 @@ describe("segmentStep", () => {
     expect(marks("Use a large bowl and a hot oven.", english)).toEqual([]);
   });
 
-  // Both "heavy cream" and "sour cream" answer to a bare "cream", so it can't
-  // be attributed and showing either quantity would be a guess.
-  it("leaves a phrase two ingredients share unmatched", () => {
+  // Both "heavy cream" and "sour cream" answer to a bare "cream". It still
+  // highlights, carrying both so the tooltip can show each amount; the full
+  // names remain unambiguous.
+  it("offers every candidate for a phrase two ingredients share", () => {
     const creams = [
       { id: 1, name: "heavy cream" },
       { id: 2, name: "sour cream" },
     ];
-    expect(marks("Whip the cream.", creams)).toEqual([]);
+    expect(marks("Whip the cream.", creams)).toEqual(["1+2:cream"]);
     expect(marks("Fold in the sour cream.", creams)).toEqual(["2:sour cream"]);
     expect(marks("Whip the heavy cream.", creams)).toEqual(["1:heavy cream"]);
+  });
+
+  // A sectioned recipe lists the same ingredient under each section. Treating
+  // that as unresolvable ambiguity meant a step naming three ingredients
+  // highlighted none of them.
+  it("still highlights an ingredient listed twice", () => {
+    const sectioned = [
+      { id: 1, name: "granulated sugar" },
+      { id: 2, name: "vanilla extract" },
+      { id: 3, name: "heavy cream" },
+      { id: 4, name: "sugar" },
+      { id: 5, name: "vanilla extract" },
+    ];
+    expect(
+      marks("Whip the heavy cream, sugar, and vanilla extract until peaks form.", sectioned)
+    ).toEqual(["3:heavy cream", "1+4:sugar", "2+5:vanilla extract"]);
+  });
+
+  it("highlights a name duplicated verbatim, carrying both entries", () => {
+    const twice = [
+      { id: 1, name: "heavy cream" },
+      { id: 2, name: "heavy cream" },
+    ];
+    expect(marks("Whip the heavy cream.", twice)).toEqual(["1+2:heavy cream"]);
+  });
+
+  // A real imported recipe: quantities and footnote marks survive into the
+  // names, and a sectioned list repeats sugar, vanilla and cream. This step
+  // highlighted nothing at all before.
+  describe("an imported Black Forest cake", () => {
+    const cake = [
+      "all-purpose flour (spooned & leveled) (219g)",
+      "unsweetened natural cocoa powder*",
+      "granulated sugar (350g)",
+      "baking soda",
+      "baking powder",
+      "espresso powder (optional)*",
+      "canola or vegetable oil (120ml)",
+      "large eggs, at room temperature",
+      "full fat sour cream, at room temperature* (180g)",
+      "pure vanilla extract",
+      "hot water or coffee* (120ml)",
+      "dark sweet cherries in heavy syrup* (15 ounce)",
+      "heavy cream or heavy whipping cream (240ml)",
+      "two 4-ounce semi-sweet chocolate bars (226g), finely chopped",
+      "optional: 1 Tablespoon light corn syrup*",
+      "confectioners’ sugar (30g)",
+      "pure vanilla extract",
+    ].map((name, i) => ({ id: i + 1, name }));
+
+    const words = (text: string) =>
+      segmentStep(text, cake)
+        .filter((s) => s.ingredientIds?.length)
+        .map((s) => s.text);
+
+    it("highlights every ingredient the whipped-cream step names", () => {
+      expect(
+        words("whip the heavy cream, sugar, and vanilla extract on medium-high speed")
+      ).toEqual(["heavy cream", "sugar", "vanilla extract"]);
+    });
+
+    it("reaches a name carrying a footnote mark", () => {
+      // "coffee*" would otherwise be matched literally, asterisk and all.
+      expect(words("Pour the hot coffee into the batter.")).toEqual(["coffee"]);
+      expect(words("Whisk in the cocoa powder.")).toEqual(["cocoa powder"]);
+    });
+
+    it("never treats a leftover measurement as an ingredient", () => {
+      expect(words("Stir for 2 minutes, then add 1 Tablespoon at a time.")).toEqual([]);
+    });
+
+    it("still distinguishes the two powders", () => {
+      expect(words("Add the baking soda and baking powder.")).toEqual([
+        "baking soda",
+        "baking powder",
+      ]);
+    });
   });
 
   it("handles a step with no mentions", () => {

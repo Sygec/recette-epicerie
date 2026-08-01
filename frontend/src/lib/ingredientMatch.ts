@@ -14,12 +14,15 @@
 // last ("heavy cream", "light corn syrup"), so a leading-words-only rule
 // highlights the adjective and misses the ingredient on every English recipe.
 //
-// Two guards keep that from turning into noise. A single-word phrase is only
-// allowed if it could plausibly name a food, so "heavy", "large" and "baking"
-// never match on their own. And a phrase claimed by more than one ingredient
-// is dropped entirely: with both "heavy cream" and "sour cream" on hand, a
-// bare "cream" could mean either, and showing one of their quantities at
-// random is worse than showing none.
+// A single-word phrase is only allowed if it could plausibly name a food, so
+// "heavy", "large" and "baking" never match on their own.
+//
+// A phrase can belong to more than one ingredient — a sectioned recipe lists
+// "sugar" under both the cake and the whipped cream, and "cream" fits both
+// "heavy cream" and "sour cream". Those carry every candidate rather than
+// picking one, so the tooltip can show each amount and let the reader choose.
+// Dropping them instead, as this once did, meant a step naming three
+// ingredients could highlight none of them.
 //
 // It still doesn't do synonyms: "égoutter les pâtes" stays plain text in a
 // recipe whose ingredient is Spaghetti.
@@ -32,8 +35,12 @@ export interface MatchableIngredient {
 
 export interface StepSegment {
   text: string;
-  /** Set when this segment is a mention of the ingredient with this id. */
-  ingredientId?: string | number;
+  /**
+   * Set when this segment mentions an ingredient. More than one id means the
+   * wording fits several entries — two sections listing the same thing, or
+   * two foods sharing a word — and the caller should offer all of them.
+   */
+  ingredientIds?: (string | number)[];
 }
 
 // Words that can't begin or end a meaningful phrase — "pommes de" and
@@ -58,7 +65,9 @@ const QUALIFIERS = new Set([
   "granulated", "powdered", "confectioners", "all", "purpose", "semisweet",
   "bittersweet", "unsweetened", "sweetened", "boiling", "lukewarm", "cooked",
   "raw", "ripe", "baking", "optional", "divided", "beaten", "toasted",
-  "sour", "inch", "size", "sized",
+  "sour", "inch", "size", "sized", "natural", "full", "fat", "semi", "sweet",
+  "dark", "whipping", "finely", "coarsely", "spooned", "leveled", "level",
+  "chilled", "thawed", "drained", "rinsed", "peeled", "seeded", "strong",
   // French
   "gros", "grosse", "grand", "grande", "petit", "petite", "chaud", "chaude",
   "froid", "froide", "frais", "fraiche", "hache", "hachee", "moulu", "moulue",
@@ -68,6 +77,16 @@ const QUALIFIERS = new Set([
   // Counting words, which show up in imported names like "two 9-inch pans"
   "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
   "un", "une", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf", "dix",
+  // Measurements, which survive into a name whenever the importer can't
+  // split them off ("optional: 1 Tablespoon light corn syrup"). A step
+  // saying "add 2 tablespoons" is talking about an amount, not an
+  // ingredient.
+  "teaspoon", "teaspoons", "tsp", "tablespoon", "tablespoons", "tbsp",
+  "cup", "cups", "ounce", "ounces", "pound", "pounds", "gram", "grams",
+  "quart", "pint", "gallon", "pinch", "dash", "can", "cans", "jar", "jars",
+  "package", "packages", "box", "bag", "stick", "sticks",
+  "cuillere", "cuilleres", "tasse", "tasses", "gramme", "grammes", "litre",
+  "pincee", "boite", "boites", "sachet", "tranche", "tranches",
 ]);
 
 // Lowercase and strip accents WITHOUT changing the string's length, so that
@@ -121,7 +140,14 @@ function numberAgnostic(escaped: string): string {
 export function buildTerms(name: string): string[] {
   const terms = new Set<string>();
   for (const variant of nameVariants(name)) {
-    const words = fold(variant).split(/\s+/).filter(Boolean);
+    // Reference marks and list punctuation ride along on words — "coffee*",
+    // "powder*", "optional:" — and would otherwise be matched literally, so a
+    // step saying plain "coffee" would find nothing. Trim anything that isn't
+    // a letter, digit or apostrophe from each end.
+    const words = fold(variant)
+      .split(/\s+/)
+      .map((word) => word.replace(/^[^\p{L}\p{N}]+/gu, "").replace(/[^\p{L}\p{N}'’]+$/gu, ""))
+      .filter(Boolean);
     for (let i = 0; i < words.length; i++) {
       for (let j = words.length; j > i; j--) {
         const slice = words.slice(i, j);
@@ -172,30 +198,22 @@ export function segmentStep(
 ): StepSegment[] {
   const folded = fold(text);
 
-  // A phrase two ingredients both answer to can't be attributed to either, so
-  // it matches nothing. With "heavy cream" and "sour cream" both present, the
-  // full names still match but a bare "cream" is left alone rather than
-  // labelled with a coin-flip quantity.
-  const owners = new Map<string, Set<string | number>>();
+  // Which ingredients answer to each phrase. Built once for the whole list so
+  // a phrase several of them share is matched a single time, carrying all of
+  // them, rather than once per owner.
+  const owners = new Map<string, (string | number)[]>();
   for (const ingredient of ingredients) {
     for (const term of buildTerms(ingredient.name)) {
-      const set = owners.get(term) ?? new Set();
-      set.add(ingredient.id);
-      owners.set(term, set);
+      const ids = owners.get(term) ?? [];
+      if (!ids.includes(ingredient.id)) ids.push(ingredient.id);
+      owners.set(term, ids);
     }
   }
 
-  const hits: { start: number; end: number; ingredientId: string | number }[] = [];
-  for (const ingredient of ingredients) {
-    for (const term of buildTerms(ingredient.name)) {
-      if ((owners.get(term)?.size ?? 0) > 1) continue;
-      for (const m of folded.matchAll(termToRegExp(term))) {
-        hits.push({
-          start: m.index!,
-          end: m.index! + m[0].length,
-          ingredientId: ingredient.id,
-        });
-      }
+  const hits: { start: number; end: number; ingredientIds: (string | number)[] }[] = [];
+  for (const [term, ids] of owners) {
+    for (const m of folded.matchAll(termToRegExp(term))) {
+      hits.push({ start: m.index!, end: m.index! + m[0].length, ingredientIds: ids });
     }
   }
 
@@ -217,7 +235,7 @@ export function segmentStep(
     if (hit.start > cursor) segments.push({ text: text.slice(cursor, hit.start) });
     segments.push({
       text: text.slice(hit.start, hit.end),
-      ingredientId: hit.ingredientId,
+      ingredientIds: hit.ingredientIds,
     });
     cursor = hit.end;
   }
