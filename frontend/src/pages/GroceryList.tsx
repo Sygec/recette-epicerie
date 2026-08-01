@@ -433,24 +433,17 @@ export default function GroceryList() {
         </div>
       )}
 
-      {/* Both of these manage the machinery behind the list rather than the
-          list itself, so they sit together here instead of taking a nav slot
-          — five tabs don't fit at phone width. */}
-      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
-        <button
-          type="button"
-          onClick={() => setShowManageModal(true)}
-          className="text-xs font-medium text-sage-dark hover:underline"
-        >
-          Gérer les listes et magasins
-        </button>
-        <Link
-          to="/dictionnaire"
-          className="text-xs font-medium text-sage-dark hover:underline"
-        >
-          Dictionnaire des aliments
-        </Link>
-      </div>
+      {/* The dictionary used to be linked here too; it has its own nav tab
+          now, so this is back to just the list/store manager. The merge
+          notice below still links to it, where it's contextual rather than
+          a second permanent entry point. */}
+      <button
+        type="button"
+        onClick={() => setShowManageModal(true)}
+        className="mt-2 text-xs font-medium text-sage-dark hover:underline"
+      >
+        Gérer les listes et magasins
+      </button>
       {showManageModal && (
         <ListStoreManager
           lists={lists}
