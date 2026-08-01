@@ -24,7 +24,7 @@ export default function Nav() {
           to={to}
           end={end}
           className={({ isActive }) =>
-            `flex flex-col items-center gap-0.5 rounded-full px-2 py-2 text-[11px] font-medium leading-tight transition-colors sm:px-4 sm:text-xs ${
+            `flex flex-1 flex-col items-center gap-0.5 rounded-full px-1 py-2 text-[11px] font-medium leading-tight transition-colors sm:flex-none sm:px-4 sm:text-xs ${
               isActive ? "bg-ink/[0.06] text-sage-dark" : "text-ink/70 hover:text-ink"
             }`
           }
