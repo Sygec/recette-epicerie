@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, RecipeDetail as RecipeDetailType } from "../lib/api";
 import AddToListReview, { ReviewIngredient } from "../components/AddToListReview";
+import StepText from "../components/StepText";
 import { roundQuantity } from "../lib/quantity";
 
 // Only http(s) URLs are safe to render as a clickable href — anything else
@@ -25,6 +26,9 @@ export default function RecipeDetail() {
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [desiredServings, setDesiredServings] = useState<number | null>(null);
+  // Held here rather than per step so only one ingredient tooltip is ever
+  // open, whichever step it belongs to.
+  const [openMention, setOpenMention] = useState<string | null>(null);
   const [showAddToList, setShowAddToList] = useState(false);
 
   useEffect(() => {
@@ -208,7 +212,16 @@ export default function RecipeDetail() {
                 <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-sage/15 font-mono text-xs text-sage-dark">
                   {step.step_number}
                 </span>
-                <p className="text-sm leading-relaxed">{step.text}</p>
+                {/* reviewIngredients is already scaled to the chosen
+                    servings, so a mention's tooltip agrees with the
+                    ingredient list above. */}
+                <StepText
+                  stepId={step.id}
+                  text={step.text}
+                  ingredients={reviewIngredients}
+                  openKey={openMention}
+                  onOpenChange={setOpenMention}
+                />
               </li>
             ))}
           </ol>
