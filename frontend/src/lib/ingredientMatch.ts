@@ -1,22 +1,28 @@
 // Finds where a recipe's ingredients are mentioned in its step text, so the
 // steps can highlight them and show the quantity on tap.
 //
-// Steps rarely repeat an ingredient's list entry verbatim. Real cases from
-// the seeded recipes:
+// Steps rarely repeat an ingredient's list entry verbatim, so matching works
+// on sub-phrases of the name rather than the whole thing:
 //
 //   "Pecorino romano râpé"    -> step says "le pecorino"
 //   "Guanciale (ou pancetta)" -> step says "le guanciale"
-//   "Oignons"                 -> step says "l'oignon"
-//   "Pommes de terre"         -> step says "les pommes de terre"
+//   "heavy cream"             -> step says "the cream"
+//   "large eggs"              -> step says "the eggs"
 //
-// So matching works on progressively shorter leading phrases of the name,
-// with parentheticals and trailing qualifiers stripped, and singular/plural
-// treated as the same word. The longest phrase that appears wins, which is
-// what keeps "pommes de terre" from being labelled as "Pommes".
+// Every contiguous run of words counts, not just leading ones. French puts
+// the head noun first ("crème sure", "pommes de terre") but English puts it
+// last ("heavy cream", "light corn syrup"), so a leading-words-only rule
+// highlights the adjective and misses the ingredient on every English recipe.
 //
-// It deliberately does NOT try to be clever about synonyms: a step that says
-// "égoutter les pâtes" about spaghetti stays plain text. Guessing there would
-// mean wrong labels, and a wrong quantity is worse than no quantity.
+// Two guards keep that from turning into noise. A single-word phrase is only
+// allowed if it could plausibly name a food, so "heavy", "large" and "baking"
+// never match on their own. And a phrase claimed by more than one ingredient
+// is dropped entirely: with both "heavy cream" and "sour cream" on hand, a
+// bare "cream" could mean either, and showing one of their quantities at
+// random is worse than showing none.
+//
+// It still doesn't do synonyms: "égoutter les pâtes" stays plain text in a
+// recipe whose ingredient is Spaghetti.
 
 export interface MatchableIngredient {
   // string | number because meal-plan review rows carry composite ids.
@@ -30,10 +36,38 @@ export interface StepSegment {
   ingredientId?: string | number;
 }
 
-// Words that can't end a meaningful phrase — "pommes de" is not a thing to
-// match on, though "pommes" and "pommes de terre" both are.
-const TRAILING_STOPWORDS = new Set([
+// Words that can't begin or end a meaningful phrase — "pommes de" and
+// "hot water or" are not things to match on.
+const EDGE_STOPWORDS = new Set([
+  // French
   "de", "des", "du", "d", "a", "au", "aux", "en", "le", "la", "les", "l", "et", "ou",
+  // English
+  "or", "and", "of", "the", "an", "to", "with", "for", "in", "into", "at", "on",
+]);
+
+// Words that describe an ingredient without naming one. They can appear
+// inside a phrase ("heavy cream") but never stand alone as a match, which is
+// what stopped "large", "hot", "heavy" and "baking" from being highlighted
+// as though they were ingredients.
+const QUALIFIERS = new Set([
+  // English — size, state, preparation
+  "large", "small", "medium", "extra", "hot", "cold", "warm", "room",
+  "temperature", "fresh", "freshly", "dried", "chopped", "minced", "ground",
+  "grated", "shredded", "sliced", "diced", "melted", "softened", "packed",
+  "sifted", "whole", "heavy", "light", "unsalted", "salted", "plain", "pure",
+  "granulated", "powdered", "confectioners", "all", "purpose", "semisweet",
+  "bittersweet", "unsweetened", "sweetened", "boiling", "lukewarm", "cooked",
+  "raw", "ripe", "baking", "optional", "divided", "beaten", "toasted",
+  "sour", "inch", "size", "sized",
+  // French
+  "gros", "grosse", "grand", "grande", "petit", "petite", "chaud", "chaude",
+  "froid", "froide", "frais", "fraiche", "hache", "hachee", "moulu", "moulue",
+  "rape", "rapee", "fondu", "fondue", "tiede", "entier", "entiere", "sale",
+  "salee", "doux", "douce", "sure", "tempere", "ambiante", "cuit", "cuite",
+  "cru", "crue", "mur", "mure", "facultatif", "coupe", "coupee",
+  // Counting words, which show up in imported names like "two 9-inch pans"
+  "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+  "un", "une", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf", "dix",
 ]);
 
 // Lowercase and strip accents WITHOUT changing the string's length, so that
@@ -52,50 +86,77 @@ export function fold(text: string): string {
 // Drops the parts of a list entry that a step won't repeat: a parenthetical
 // alternative ("(ou pancetta)"), and anything after a comma, which is
 // normally preparation notes ("râpé, à température ambiante").
-function cleanName(name: string): string {
-  return name
+//
+// "or"/"ou" separates genuine alternatives ("hot water or coffee"), so each
+// side becomes its own phrase source — a step is free to mention either.
+function nameVariants(name: string): string[] {
+  const base = name
     .replace(/\([^)]*\)/g, " ")
     .split(",")[0]
-    .replace(/\s+/g, " ")
-    .trim();
+    .replace(/[-–—/]/g, " ");
+  return base
+    .split(/\s(?:or|ou)\s/i)
+    // "d'œufs" is an article glued to a noun; split it so the noun is a
+    // phrase in its own right and a step saying "les œufs" still matches.
+    .map((part) => part.replace(/\b([dlnscjt]|qu)['’]/gi, "$1' "))
+    .map((part) => part.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
 }
 
-function singular(word: string): string {
-  // Only fold a trailing "s" on words long enough that it's plausibly a
-  // plural marker — this must not turn "jus" into "ju".
-  return word.length > 3 && word.endsWith("s") ? word.slice(0, -1) : word;
+// Matches a word in either number: "cream(s)", "cherry/cherries". Guarded by
+// length so short words aren't mangled — this must not turn "jus" into "ju".
+function numberAgnostic(escaped: string): string {
+  if (escaped.length > 4 && escaped.endsWith("ies")) {
+    return `${escaped.slice(0, -3)}(?:y|ies)`;
+  }
+  const stem = escaped.length > 3 && escaped.endsWith("s") ? escaped.slice(0, -1) : escaped;
+  return `${stem}s?`;
 }
 
 /**
- * The phrases worth looking for, longest first: every leading run of words
- * that doesn't end on a stopword.
+ * Every contiguous run of words in the name that could stand for the
+ * ingredient, longest first. Covers head-first names ("crème sure" -> crème)
+ * and head-last ones ("heavy cream" -> cream) without knowing the language.
  */
 export function buildTerms(name: string): string[] {
-  const words = fold(cleanName(name)).split(/\s+/).filter(Boolean);
-  const terms: string[] = [];
-  for (let n = words.length; n >= 1; n--) {
-    const slice = words.slice(0, n);
-    const last = slice[slice.length - 1].replace(/['’]$/, "");
-    if (TRAILING_STOPWORDS.has(last)) continue;
-    // A one-word term has to carry some weight on its own; "ail" is fine,
-    // but two-letter fragments would match half the page.
-    if (n === 1 && slice[0].length < 3) continue;
-    terms.push(slice.join(" "));
+  const terms = new Set<string>();
+  for (const variant of nameVariants(name)) {
+    const words = fold(variant).split(/\s+/).filter(Boolean);
+    for (let i = 0; i < words.length; i++) {
+      for (let j = words.length; j > i; j--) {
+        const slice = words.slice(i, j);
+        const first = slice[0].replace(/['’]$/, "");
+        const last = slice[slice.length - 1].replace(/['’]$/, "");
+        if (EDGE_STOPWORDS.has(first) || EDGE_STOPWORDS.has(last)) continue;
+        // Measurements that leaked into a name ("two 9-inch cake pans") are
+        // not something a step refers to by number.
+        if (slice.some((word) => /\d/.test(word))) continue;
+        if (slice.length === 1) {
+          const word = slice[0];
+          // A lone word must plausibly name a food: long enough to be
+          // distinctive, and not a pure descriptor.
+          if (word.length < 3 || QUALIFIERS.has(word)) continue;
+        }
+        terms.add(slice.join(" "));
+      }
+    }
   }
-  return terms;
+  return [...terms].sort((a, b) => b.length - a.length);
 }
 
 function termToRegExp(term: string): RegExp {
-  const pattern = term
-    .split(" ")
-    .map((word) => {
-      const stem = singular(word)
+  const words = term.split(" ");
+  const pattern = words
+    .map((word, i) => {
+      const escaped = word
         .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
         .replace(/['’]/g, "['’]");
-      // Allow the plural form of any word in the phrase.
-      return `${stem}s?`;
+      // An elided article runs straight into the next word ("d'œufs"), so
+      // whitespace after it is optional; everywhere else it's required.
+      const separator = i === 0 ? "" : words[i - 1].endsWith("'") ? "\\s*" : "\\s+";
+      return separator + numberAgnostic(escaped);
     })
-    .join("\\s+");
+    .join("");
   // Word boundaries that understand apostrophes: "l'oignon" must match
   // "oignon", but "conseil" must not match "sel".
   return new RegExp(`(?<![a-z0-9])${pattern}(?![a-z0-9])`, "g");
@@ -111,9 +172,23 @@ export function segmentStep(
 ): StepSegment[] {
   const folded = fold(text);
 
+  // A phrase two ingredients both answer to can't be attributed to either, so
+  // it matches nothing. With "heavy cream" and "sour cream" both present, the
+  // full names still match but a bare "cream" is left alone rather than
+  // labelled with a coin-flip quantity.
+  const owners = new Map<string, Set<string | number>>();
+  for (const ingredient of ingredients) {
+    for (const term of buildTerms(ingredient.name)) {
+      const set = owners.get(term) ?? new Set();
+      set.add(ingredient.id);
+      owners.set(term, set);
+    }
+  }
+
   const hits: { start: number; end: number; ingredientId: string | number }[] = [];
   for (const ingredient of ingredients) {
     for (const term of buildTerms(ingredient.name)) {
+      if ((owners.get(term)?.size ?? 0) > 1) continue;
       for (const m of folded.matchAll(termToRegExp(term))) {
         hits.push({
           start: m.index!,
