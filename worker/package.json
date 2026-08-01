@@ -4,8 +4,14 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
+    "test": "vitest run",
+    "build:frontend": "npm --prefix ../frontend install && npm --prefix ../frontend run build",
+    "predeploy": "npm run build:frontend",
     "deploy": "wrangler deploy --env=\"\"",
-    "deploy:staging": "wrangler deploy --env staging"
+    "predeploy:staging": "npm run build:frontend",
+    "deploy:staging": "wrangler deploy --env staging",
+    "predeploy:ci": "npm run build:frontend",
+    "deploy:ci": "wrangler versions upload"
   },
   "dependencies": {
     "hono": "^4.6.0"
@@ -13,6 +19,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260722.1",
     "typescript": "^5.5.0",
+    "vitest": "^4.1.10",
     "wrangler": "^4.113.0"
   }
 }

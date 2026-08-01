@@ -14,12 +14,28 @@ import {
   loadAliasRows,
   matchFood,
   normalizeFoodIdentity,
+  normalizeFoodText,
   updateNameConversionNote,
 } from "./foodDictionary";
 
 const app = new Hono<{ Bindings: Env }>();
 
 app.use("*", cors());
+
+// Hono's default for an uncaught throw is a plain-text "Internal Server
+// Error". The client parses errors as JSON and falls back to a generic
+// "Une erreur est survenue" when that fails, so the real cause — a missing
+// column, a constraint violation — never reaches the person who could act on
+// it. Return the message as JSON and log it for `wrangler tail`. The app sits
+// behind a single shared password, so there's no wider audience to leak
+// internals to, and a schema error that says what it is beats a mystery.
+app.onError((err, c) => {
+  console.error("Unhandled error:", err instanceof Error ? (err.stack ?? err.message) : err);
+  return c.json(
+    { error: err instanceof Error ? err.message : "Une erreur est survenue" },
+    500
+  );
+});
 
 // Recipe photos are stored in R2 and later re-served with this same
 // Content-Type, on the same origin as the app (see the ASSETS catch-all
@@ -314,6 +330,17 @@ app.put("/api/recipes/:id", async (c) => {
   const id = c.req.param("id");
   const body = await c.req.json<RecipePayload>();
 
+  // The photo isn't part of the edit form — it's set by its own upload
+  // endpoints — so the form doesn't round-trip photo_url and an absent key
+  // has to mean "leave it alone". Treating absent as null wiped the photo of
+  // every recipe on every save, and orphaned the R2 object behind it. An
+  // explicit null still clears it, for a caller that actually means to.
+  const existing = await c.env.DB.prepare("SELECT photo_url FROM recipes WHERE id = ?")
+    .bind(id)
+    .first<{ photo_url: string | null }>();
+  if (!existing) return c.json({ error: "Recette introuvable" }, 404);
+  const photoUrl = body.photo_url !== undefined ? body.photo_url : existing.photo_url;
+
   await c.env.DB.prepare(
     `UPDATE recipes SET
       title = ?, description = ?, photo_url = ?, servings = ?,
@@ -323,7 +350,7 @@ app.put("/api/recipes/:id", async (c) => {
     .bind(
       body.title,
       body.description ?? null,
-      body.photo_url ?? null,
+      photoUrl,
       body.servings ?? null,
       body.prep_time ?? null,
       body.cook_time ?? null,
@@ -364,9 +391,40 @@ app.put("/api/recipes/:id", async (c) => {
 
 app.delete("/api/recipes/:id", async (c) => {
   const id = c.req.param("id");
-  await c.env.DB.prepare("DELETE FROM recipes WHERE id = ?").bind(id).run();
+
+  // grocery_items.recipe_id is the one foreign key to recipes without an
+  // ON DELETE clause (ingredients, steps, tags and meal-plan entries all
+  // cascade), so deleting a recipe that had been added to a list failed the
+  // constraint and the whole delete threw. Drop the link but keep the item:
+  // it's still on the list because you still need to buy it, whatever became
+  // of the recipe it came from.
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE grocery_items SET recipe_id = NULL WHERE recipe_id = ?").bind(
+      id
+    ),
+    c.env.DB.prepare("DELETE FROM recipes WHERE id = ?").bind(id),
+  ]);
+
+  // The row is gone, so nothing can reference these any more.
+  await deleteStalePhotos(c.env, id);
   return c.json({ ok: true });
 });
+
+// Photos live in R2 under a "recipes/<id>/" prefix, but only the key named by
+// recipes.photo_url is ever served. Anything else under that prefix is a
+// previous photo nothing points at any more, so replacing a photo has to
+// clean up after itself or every re-upload leaves a permanent orphan.
+// Deletion is best-effort: losing the DB row's new photo because a stale
+// object couldn't be removed would be a worse trade.
+async function deleteStalePhotos(env: Env, recipeId: string, keepKey?: string) {
+  try {
+    const listed = await env.PHOTOS.list({ prefix: `recipes/${recipeId}/` });
+    const stale = listed.objects.map((o) => o.key).filter((k) => k !== keepKey);
+    if (stale.length) await env.PHOTOS.delete(stale);
+  } catch (err) {
+    console.error("Could not clean up photos for recipe", recipeId, err);
+  }
+}
 
 // Photo upload — stores the file in R2 and returns its public path,
 // which the client then saves onto the recipe's photo_url field.
@@ -398,6 +456,7 @@ app.post("/api/recipes/:id/photo", async (c) => {
   await c.env.DB.prepare("UPDATE recipes SET photo_url = ? WHERE id = ?")
     .bind(photoUrl, id)
     .run();
+  await deleteStalePhotos(c.env, id, key);
 
   return c.json({ photo_url: photoUrl });
 });
@@ -442,8 +501,169 @@ app.post("/api/recipes/:id/photo-from-url", async (c) => {
   await c.env.DB.prepare("UPDATE recipes SET photo_url = ? WHERE id = ?")
     .bind(photoUrl, id)
     .run();
+  await deleteStalePhotos(c.env, id, key);
 
   return c.json({ photo_url: photoUrl });
+});
+
+// ---------------------------------------------------------------------------
+// Photo maintenance
+//
+// Nothing deleted from R2 until recently, so the bucket accumulated objects
+// nothing points at: photos replaced by a re-upload, photos of deleted
+// recipes, and photos of recipes whose photo_url was wiped by a save (see
+// PUT /api/recipes/:id). This audits the bucket against the database and
+// proposes what to do; it never acts on its own.
+//
+// Keys are "recipes/<recipeId>/<millis>-<name>", which is what makes an
+// object attributable to a recipe even after its photo_url is gone — and so
+// what makes recovering a wiped photo possible rather than guesswork.
+// ---------------------------------------------------------------------------
+
+type PhotoVerdict =
+  | "in_use" // the recipe's current photo — never touched
+  | "restorable" // recipe exists with no photo; best candidate to put back
+  | "superseded" // recipe has a different current photo, or a better candidate
+  | "dangling" // the recipe itself is gone
+  | "unattributable"; // key doesn't follow the recipes/<id>/ layout
+
+interface PhotoAuditEntry {
+  key: string;
+  size: number;
+  uploaded: string;
+  recipe_id: number | null;
+  recipe_title: string | null;
+  verdict: PhotoVerdict;
+}
+
+async function listAllPhotos(env: Env) {
+  const all: { key: string; size: number; uploaded: Date }[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await env.PHOTOS.list({ prefix: "recipes/", cursor });
+    all.push(...page.objects.map((o) => ({ key: o.key, size: o.size, uploaded: o.uploaded })));
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return all;
+}
+
+async function auditPhotos(env: Env) {
+  const objects = await listAllPhotos(env);
+  const { results: recipes } = await env.DB.prepare(
+    "SELECT id, title, photo_url FROM recipes"
+  ).all<{ id: number; title: string; photo_url: string | null }>();
+  const byId = new Map(recipes.map((r) => [r.id, r]));
+
+  const entries: PhotoAuditEntry[] = objects.map((o) => {
+    const match = o.key.match(/^recipes\/(\d+)\//);
+    if (!match) {
+      return {
+        key: o.key,
+        size: o.size,
+        uploaded: o.uploaded.toISOString(),
+        recipe_id: null,
+        recipe_title: null,
+        verdict: "unattributable" as PhotoVerdict,
+      };
+    }
+    const recipeId = Number(match[1]);
+    const recipe = byId.get(recipeId);
+    let verdict: PhotoVerdict;
+    if (!recipe) verdict = "dangling";
+    else if (recipe.photo_url === `/photos/${o.key}`) verdict = "in_use";
+    else if (recipe.photo_url == null) verdict = "restorable";
+    else verdict = "superseded";
+    return {
+      key: o.key,
+      size: o.size,
+      uploaded: o.uploaded.toISOString(),
+      recipe_id: recipeId,
+      recipe_title: recipe?.title ?? null,
+      verdict,
+    };
+  });
+
+  // A recipe with no photo may have several leftover objects. Only the most
+  // recent is worth putting back; the rest were already superseded before the
+  // photo_url was lost, so they'd have been deleted anyway.
+  const restorable = new Map<number, PhotoAuditEntry>();
+  for (const e of entries) {
+    if (e.verdict !== "restorable" || e.recipe_id == null) continue;
+    const best = restorable.get(e.recipe_id);
+    if (!best || e.uploaded > best.uploaded) restorable.set(e.recipe_id, e);
+  }
+  for (const e of entries) {
+    if (e.verdict === "restorable" && restorable.get(e.recipe_id!)?.key !== e.key) {
+      e.verdict = "superseded";
+    }
+  }
+
+  const remap = Array.from(restorable.values()).map((e) => ({
+    recipe_id: e.recipe_id!,
+    recipe_title: e.recipe_title,
+    photo_url: `/photos/${e.key}`,
+    uploaded: e.uploaded,
+  }));
+  const deletable = entries.filter(
+    (e) => e.verdict === "superseded" || e.verdict === "dangling"
+  );
+
+  return {
+    entries,
+    remap,
+    delete_keys: deletable.map((e) => e.key),
+    summary: {
+      total: entries.length,
+      in_use: entries.filter((e) => e.verdict === "in_use").length,
+      restorable: remap.length,
+      superseded: entries.filter((e) => e.verdict === "superseded").length,
+      dangling: entries.filter((e) => e.verdict === "dangling").length,
+      unattributable: entries.filter((e) => e.verdict === "unattributable").length,
+      reclaimed_bytes: deletable.reduce((n, e) => n + e.size, 0),
+    },
+  };
+}
+
+app.get("/api/maintenance/photo-audit", async (c) => c.json(await auditPhotos(c.env)));
+
+// Applies exactly what it is given — the keys and remappings the caller has
+// already seen — rather than recomputing a plan that might have drifted since.
+// Each deletion is re-checked against the live photo_url set first, so a key
+// that became someone's current photo between audit and apply survives
+// regardless of what the caller asked for.
+app.post("/api/maintenance/photo-cleanup", async (c) => {
+  const body = await c.req.json<{
+    delete_keys?: string[];
+    remap?: { recipe_id: number; photo_url: string }[];
+  }>();
+
+  const remapped: { recipe_id: number; photo_url: string }[] = [];
+  for (const entry of body.remap ?? []) {
+    if (!entry.photo_url?.startsWith("/photos/recipes/")) continue;
+    // Only fills a gap; never overwrites a photo the recipe already has.
+    const res = await c.env.DB.prepare(
+      "UPDATE recipes SET photo_url = ? WHERE id = ? AND photo_url IS NULL"
+    )
+      .bind(entry.photo_url, entry.recipe_id)
+      .run();
+    if (res.meta.changes) remapped.push(entry);
+  }
+
+  const { results: live } = await c.env.DB.prepare(
+    "SELECT photo_url FROM recipes WHERE photo_url IS NOT NULL"
+  ).all<{ photo_url: string }>();
+  const inUse = new Set(live.map((r) => r.photo_url));
+
+  const requested = (body.delete_keys ?? []).filter((k) => k.startsWith("recipes/"));
+  const deleted = requested.filter((k) => !inUse.has(`/photos/${k}`));
+  const skipped = requested.filter((k) => inUse.has(`/photos/${k}`));
+
+  // R2 caps a bulk delete at 1000 keys.
+  for (let i = 0; i < deleted.length; i += 1000) {
+    await c.env.PHOTOS.delete(deleted.slice(i, i + 1000));
+  }
+
+  return c.json({ remapped, deleted, skipped });
 });
 
 // Serves photos out of R2 (bound as PHOTOS) under /photos/*.
@@ -492,6 +712,102 @@ app.get("/api/tags", async (c) => {
     "SELECT * FROM tags ORDER BY name"
   ).all();
   return c.json(results);
+});
+
+// ---------------------------------------------------------------------------
+// Meal planning (Phase 3) — one planned souper (dinner) per day, keyed by
+// date rather than a separate week/month entity (see meal_plan_entries'
+// UNIQUE(date)). Assigning a new recipe to an already-planned day replaces
+// it via the same POST, which is also how a day's servings get edited
+// (re-POST the same recipe_id with a new servings value).
+// ---------------------------------------------------------------------------
+
+interface MealPlanEntryRow {
+  id: number;
+  date: string;
+  recipe_id: number;
+  servings: number | null;
+  notes: string | null;
+  recipe_title: string;
+  recipe_photo_url: string | null;
+  recipe_servings: number | null;
+}
+
+app.get("/api/meal-plan", async (c) => {
+  const start = c.req.query("start");
+  const end = c.req.query("end");
+  if (!start || !end) {
+    return c.json({ error: "start et end sont requis" }, 400);
+  }
+
+  const { results: entries } = await c.env.DB.prepare(
+    `SELECT mpe.id, mpe.date, mpe.recipe_id, mpe.servings, mpe.notes,
+            r.title AS recipe_title, r.photo_url AS recipe_photo_url, r.servings AS recipe_servings
+     FROM meal_plan_entries mpe
+     JOIN recipes r ON r.id = mpe.recipe_id
+     WHERE mpe.date >= ? AND mpe.date <= ?
+     ORDER BY mpe.date ASC`
+  )
+    .bind(start, end)
+    .all<MealPlanEntryRow>();
+
+  if (entries.length === 0) return c.json([]);
+
+  // A second query for ingredients (not a join) — a join would multiply
+  // each entry row by its ingredient count, and every entry needs its full
+  // ingredient list anyway for the "add the week to the grocery list" flow.
+  const recipeIds = [...new Set(entries.map((e) => e.recipe_id))];
+  const placeholders = recipeIds.map(() => "?").join(",");
+  const { results: ingredients } = await c.env.DB.prepare(
+    `SELECT * FROM ingredients WHERE recipe_id IN (${placeholders}) ORDER BY sort_order`
+  )
+    .bind(...recipeIds)
+    .all<{ id: number; recipe_id: number; name: string; quantity: number | null; unit: string | null }>();
+
+  const byRecipe = new Map<number, typeof ingredients>();
+  for (const ing of ingredients) {
+    if (!byRecipe.has(ing.recipe_id)) byRecipe.set(ing.recipe_id, []);
+    byRecipe.get(ing.recipe_id)!.push(ing);
+  }
+
+  return c.json(
+    entries.map((e) => ({ ...e, ingredients: byRecipe.get(e.recipe_id) ?? [] }))
+  );
+});
+
+interface MealPlanPayload {
+  date: string;
+  recipe_id: number;
+  servings?: number;
+  notes?: string;
+}
+
+app.post("/api/meal-plan", async (c) => {
+  const body = await c.req.json<MealPlanPayload>();
+  if (!body.date || !body.recipe_id) {
+    return c.json({ error: "date et recipe_id sont requis" }, 400);
+  }
+
+  await c.env.DB.prepare(
+    `INSERT INTO meal_plan_entries (date, recipe_id, servings, notes)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(date) DO UPDATE SET
+       recipe_id = excluded.recipe_id,
+       servings = excluded.servings,
+       notes = excluded.notes`
+  )
+    .bind(body.date, body.recipe_id, body.servings ?? null, body.notes ?? null)
+    .run();
+
+  return c.json({ ok: true });
+});
+
+app.delete("/api/meal-plan/:id", async (c) => {
+  const id = c.req.param("id");
+  await c.env.DB.prepare("DELETE FROM meal_plan_entries WHERE id = ?")
+    .bind(id)
+    .run();
+  return c.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -579,33 +895,472 @@ app.delete("/api/categories/:id", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// Grocery list — Phase 1 keeps this to a single running list.
+// Stores — each grocery list is optionally tied to one, both to label the
+// list ("IGA", "Costco") and to drive its aisle ordering below.
 // ---------------------------------------------------------------------------
 
-async function getOrCreateDefaultList(env: Env): Promise<number> {
-  const existing = await env.DB.prepare(
-    "SELECT id FROM grocery_lists ORDER BY created_at ASC LIMIT 1"
-  ).first<{ id: number }>();
-  if (existing) return existing.id;
+app.get("/api/stores", async (c) => {
+  const { results } = await c.env.DB.prepare(
+    "SELECT * FROM stores ORDER BY name"
+  ).all();
+  return c.json(results);
+});
 
-  const result = await env.DB.prepare(
-    "INSERT INTO grocery_lists (name) VALUES ('Liste de courses')"
-  ).run();
-  return result.meta.last_row_id as number;
+interface StorePayload {
+  name: string;
 }
 
+app.post("/api/stores", async (c) => {
+  const body = await c.req.json<StorePayload>();
+  if (!body.name || !body.name.trim()) {
+    return c.json({ error: "Le nom du magasin est obligatoire" }, 400);
+  }
+  const result = await c.env.DB.prepare("INSERT INTO stores (name) VALUES (?)")
+    .bind(body.name.trim())
+    .run();
+  return c.json({ id: result.meta.last_row_id }, 201);
+});
+
+app.put("/api/stores/:id", async (c) => {
+  const id = c.req.param("id");
+  const body = await c.req.json<StorePayload>();
+  if (!body.name || !body.name.trim()) {
+    return c.json({ error: "Le nom du magasin est obligatoire" }, 400);
+  }
+  await c.env.DB.prepare("UPDATE stores SET name = ? WHERE id = ?")
+    .bind(body.name.trim(), id)
+    .run();
+  return c.json({ ok: true });
+});
+
+// A list whose store gets deleted keeps working — it just falls back to
+// default category ordering (see GET /api/grocery-items) — same pattern as
+// deleting a custom category reassigning affected items rather than leaving
+// a dangling reference.
+app.delete("/api/stores/:id", async (c) => {
+  const id = c.req.param("id");
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE grocery_lists SET store_id = NULL WHERE store_id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM stores WHERE id = ?").bind(id),
+  ]);
+  return c.json({ ok: true });
+});
+
+// A store only needs rows here for categories the user actually dragged
+// into a custom position — one not listed simply falls back to that
+// category's default_sort_order (resolved client-side, alongside the
+// existing /api/categories fetch).
+app.get("/api/stores/:id/category-order", async (c) => {
+  const id = c.req.param("id");
+  const { results } = await c.env.DB.prepare(
+    "SELECT category_id, sort_order FROM store_category_order WHERE store_id = ? ORDER BY sort_order ASC"
+  )
+    .bind(id)
+    .all();
+  return c.json(results);
+});
+
+// Replace-all: the client sends the full ordered list of category ids for
+// this store, and the server assigns 0..n-1 — simplest contract for a
+// reorder UI, no partial-update bookkeeping.
+app.put("/api/stores/:id/category-order", async (c) => {
+  const id = c.req.param("id");
+  const body = await c.req.json<{ category_ids?: number[] }>();
+  if (!Array.isArray(body.category_ids)) {
+    return c.json({ error: "category_ids doit être une liste" }, 400);
+  }
+
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM store_category_order WHERE store_id = ?").bind(id),
+    ...body.category_ids.map((categoryId, idx) =>
+      c.env.DB.prepare(
+        "INSERT INTO store_category_order (store_id, category_id, sort_order) VALUES (?, ?, ?)"
+      ).bind(id, categoryId, idx)
+    ),
+  ]);
+
+  return c.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Food dictionary — user-editable
+//
+// The dictionary decides two things: which aisle an item lands in, and which
+// items merge into one line. Both used to be fixed at seed time, so a wrong
+// or missing entry could only be corrected by editing schema.sql and running
+// wrangler d1 execute. These routes make it editable from the app.
+//
+// The matching rule itself (see matchFood) is deliberately unchanged: it is
+// word-bounded containment with longest-alias-wins, which is what lets a
+// recipe line like "1 tasse de crème sure, à température ambiante" resolve
+// to "crème sure". The consequence is that an unqualified alias swallows its
+// own compounds — "sucre en poudre" matches the alias "sucre" — and the fix
+// for that is to give the compound its own entry here, at which point the
+// longer alias wins. That is the main thing these routes exist for.
+// ---------------------------------------------------------------------------
+
+interface AliasConflict {
+  alias: string;
+  canonical_name: string;
+}
+
+// food_aliases.alias is UNIQUE across the whole table, so a clash is always
+// with some other food's alias. Look up which one, so the error can name it
+// instead of surfacing a bare constraint failure.
+async function findAliasConflict(
+  db: D1Database,
+  alias: string,
+  ignoreFoodId?: number
+): Promise<AliasConflict | null> {
+  const row = await db
+    .prepare(
+      `SELECT fa.alias AS alias, fa.food_id AS food_id, fd.canonical_name AS canonical_name
+       FROM food_aliases fa
+       JOIN food_dictionary fd ON fd.id = fa.food_id
+       WHERE fa.alias = ?`
+    )
+    .bind(alias)
+    .first<{ alias: string; food_id: number; canonical_name: string }>();
+  if (!row) return null;
+  if (ignoreFoodId != null && row.food_id === ignoreFoodId) return null;
+  return { alias: row.alias, canonical_name: row.canonical_name };
+}
+
+function aliasConflictMessage(conflict: AliasConflict): string {
+  return `« ${conflict.alias} » est déjà un synonyme de « ${conflict.canonical_name} »`;
+}
+
+app.get("/api/foods", async (c) => {
+  // Two queries stitched together in JS rather than one grouped query:
+  // SQLite has no json_agg, and GROUP_CONCAT would need escaping to survive
+  // an alias containing the separator. The whole dictionary is small enough
+  // to send in one response.
+  const [foods, aliases] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT fd.id, fd.canonical_name, fd.category_id, c.name AS category_name
+       FROM food_dictionary fd
+       LEFT JOIN categories c ON c.id = fd.category_id
+       ORDER BY fd.canonical_name COLLATE NOCASE`
+    ).all<{
+      id: number;
+      canonical_name: string;
+      category_id: number | null;
+      category_name: string | null;
+    }>(),
+    c.env.DB.prepare(
+      "SELECT id, food_id, alias, lang FROM food_aliases ORDER BY alias COLLATE NOCASE"
+    ).all<{ id: number; food_id: number; alias: string; lang: string }>(),
+  ]);
+
+  const byFood = new Map<number, { id: number; alias: string; lang: string }[]>();
+  for (const row of aliases.results) {
+    const list = byFood.get(row.food_id) ?? [];
+    list.push({ id: row.id, alias: row.alias, lang: row.lang });
+    byFood.set(row.food_id, list);
+  }
+
+  return c.json(
+    foods.results.map((food) => ({ ...food, aliases: byFood.get(food.id) ?? [] }))
+  );
+});
+
+interface FoodPayload {
+  canonical_name: string;
+  category_id?: number | null;
+  lang?: string;
+}
+
+app.post("/api/foods", async (c) => {
+  const body = await c.req.json<FoodPayload>();
+  // Aliases are stored lowercased and whitespace-collapsed (matching the
+  // seed), so the UNIQUE constraint catches "Sucre" vs "sucre" — which
+  // matchFood would treat as the same word anyway.
+  const name = normalizeFoodText(body.canonical_name ?? "");
+  if (!name) return c.json({ error: "Le nom de l'aliment est obligatoire" }, 400);
+
+  // matchFood only ever scans food_aliases, so a food with no alias can
+  // never match anything the user types. The canonical name is inserted as
+  // its first alias or the new entry would be inert.
+  const conflict = await findAliasConflict(c.env.DB, name);
+  if (conflict) return c.json({ error: aliasConflictMessage(conflict) }, 409);
+
+  const result = await c.env.DB.prepare(
+    "INSERT INTO food_dictionary (canonical_name, category_id) VALUES (?, ?)"
+  )
+    .bind(name, body.category_id ?? null)
+    .run();
+  const foodId = result.meta.last_row_id as number;
+
+  await c.env.DB.prepare("INSERT INTO food_aliases (food_id, alias, lang) VALUES (?, ?, ?)")
+    .bind(foodId, name, body.lang ?? "fr")
+    .run();
+
+  return c.json({ id: foodId }, 201);
+});
+
+// Renaming a food deliberately leaves its aliases alone — they are what the
+// matcher actually reads, and the old name usually still needs to match.
+app.patch("/api/foods/:id", async (c) => {
+  const id = c.req.param("id");
+  const body = await c.req.json<Partial<FoodPayload>>();
+
+  if (body.canonical_name !== undefined) {
+    const name = normalizeFoodText(body.canonical_name);
+    if (!name) return c.json({ error: "Le nom de l'aliment est obligatoire" }, 400);
+    await c.env.DB.prepare("UPDATE food_dictionary SET canonical_name = ? WHERE id = ?")
+      .bind(name, id)
+      .run();
+  }
+
+  if (body.category_id !== undefined) {
+    if (body.category_id !== null) {
+      const category = await c.env.DB.prepare("SELECT id FROM categories WHERE id = ?")
+        .bind(body.category_id)
+        .first<{ id: number }>();
+      if (!category) return c.json({ error: "Catégorie introuvable" }, 400);
+    }
+    await c.env.DB.prepare("UPDATE food_dictionary SET category_id = ? WHERE id = ?")
+      .bind(body.category_id, id)
+      .run();
+  }
+
+  return c.json({ ok: true });
+});
+
+app.delete("/api/foods/:id", async (c) => {
+  const id = c.req.param("id");
+
+  // Grocery items point at the food; clear the reference rather than
+  // orphaning it. Their name and category stay as they are — deleting a
+  // dictionary entry shouldn't rewrite the list the user is shopping from.
+  // Aliases are deleted explicitly rather than relying on ON DELETE CASCADE
+  // firing.
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE grocery_items SET food_id = NULL WHERE food_id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM food_aliases WHERE food_id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM food_dictionary WHERE id = ?").bind(id),
+  ]);
+
+  return c.json({ ok: true });
+});
+
+app.post("/api/foods/:id/aliases", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json<{ alias: string; lang?: string }>();
+  const alias = normalizeFoodText(body.alias ?? "");
+  if (!alias) return c.json({ error: "Le synonyme est obligatoire" }, 400);
+
+  const food = await c.env.DB.prepare("SELECT id FROM food_dictionary WHERE id = ?")
+    .bind(id)
+    .first<{ id: number }>();
+  if (!food) return c.json({ error: "Aliment introuvable" }, 404);
+
+  const conflict = await findAliasConflict(c.env.DB, alias, id);
+  if (conflict) return c.json({ error: aliasConflictMessage(conflict) }, 409);
+
+  // Already on this food — nothing to do, and re-inserting would trip the
+  // UNIQUE constraint.
+  const existing = await c.env.DB.prepare(
+    "SELECT id FROM food_aliases WHERE alias = ? AND food_id = ?"
+  )
+    .bind(alias, id)
+    .first<{ id: number }>();
+  if (existing) return c.json({ id: existing.id }, 200);
+
+  const result = await c.env.DB.prepare(
+    "INSERT INTO food_aliases (food_id, alias, lang) VALUES (?, ?, ?)"
+  )
+    .bind(id, alias, body.lang ?? "fr")
+    .run();
+
+  return c.json({ id: result.meta.last_row_id }, 201);
+});
+
+app.delete("/api/aliases/:id", async (c) => {
+  const id = c.req.param("id");
+
+  const alias = await c.env.DB.prepare("SELECT food_id FROM food_aliases WHERE id = ?")
+    .bind(id)
+    .first<{ food_id: number }>();
+  if (!alias) return c.json({ error: "Synonyme introuvable" }, 404);
+
+  // A food with no aliases is invisible to matchFood — it would still occupy
+  // a row but could never be matched again. Deleting the food is the way to
+  // get rid of it, not stripping its last alias.
+  const remaining = await c.env.DB.prepare(
+    "SELECT COUNT(*) AS count FROM food_aliases WHERE food_id = ?"
+  )
+    .bind(alias.food_id)
+    .first<{ count: number }>();
+  if ((remaining?.count ?? 0) <= 1) {
+    return c.json(
+      { error: "Un aliment doit garder au moins un synonyme — supprimez l'aliment." },
+      400
+    );
+  }
+
+  await c.env.DB.prepare("DELETE FROM food_aliases WHERE id = ?").bind(id).run();
+  return c.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Grocery lists — one per store (Phase 3), replacing the single implicit
+// list Phase 1/2 assumed. Every grocery-item route below now takes an
+// explicit list_id instead of resolving one automatically.
+// ---------------------------------------------------------------------------
+
+app.get("/api/grocery-lists", async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT gl.*, s.name AS store_name
+     FROM grocery_lists gl
+     LEFT JOIN stores s ON s.id = gl.store_id
+     ORDER BY gl.name COLLATE NOCASE ASC`
+  ).all();
+  return c.json(results);
+});
+
+interface GroceryListPayload {
+  name: string;
+  store_id?: number | null;
+  // 'category' groups by aisle (using the store's order when it has one);
+  // 'manual' is one flat list the user drags into shape. Per list, not
+  // global — a Costco list can be manual while the IGA list stays by aisle.
+  sort_mode?: SortMode;
+}
+
+const SORT_MODES = ["category", "manual"] as const;
+type SortMode = (typeof SORT_MODES)[number];
+
+app.post("/api/grocery-lists", async (c) => {
+  const body = await c.req.json<GroceryListPayload>();
+  if (!body.name || !body.name.trim()) {
+    return c.json({ error: "Le nom de la liste est obligatoire" }, 400);
+  }
+  const result = await c.env.DB.prepare(
+    "INSERT INTO grocery_lists (name, store_id) VALUES (?, ?)"
+  )
+    .bind(body.name.trim(), body.store_id ?? null)
+    .run();
+  return c.json({ id: result.meta.last_row_id }, 201);
+});
+
+app.put("/api/grocery-lists/:id", async (c) => {
+  const id = c.req.param("id");
+  const body = await c.req.json<Partial<GroceryListPayload>>();
+
+  const existing = await c.env.DB.prepare(
+    "SELECT name, store_id, sort_mode FROM grocery_lists WHERE id = ?"
+  )
+    .bind(id)
+    .first<{ name: string; store_id: number | null; sort_mode: SortMode }>();
+  if (!existing) return c.json({ error: "Liste introuvable" }, 404);
+
+  const name = body.name !== undefined ? body.name.trim() : existing.name;
+  if (!name) return c.json({ error: "Le nom de la liste est obligatoire" }, 400);
+  const storeId = body.store_id !== undefined ? body.store_id : existing.store_id;
+
+  if (body.sort_mode !== undefined && !SORT_MODES.includes(body.sort_mode)) {
+    return c.json({ error: "Mode de tri inconnu" }, 400);
+  }
+  const sortMode = body.sort_mode !== undefined ? body.sort_mode : existing.sort_mode;
+
+  await c.env.DB.prepare(
+    "UPDATE grocery_lists SET name = ?, store_id = ?, sort_mode = ? WHERE id = ?"
+  )
+    .bind(name, storeId, sortMode, id)
+    .run();
+  return c.json({ ok: true });
+});
+
+// Cascades to the list's items via grocery_items.list_id's ON DELETE CASCADE.
+app.delete("/api/grocery-lists/:id", async (c) => {
+  const id = c.req.param("id");
+  await c.env.DB.prepare("DELETE FROM grocery_lists WHERE id = ?").bind(id).run();
+  return c.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Grocery items
+// ---------------------------------------------------------------------------
+
 app.get("/api/grocery-items", async (c) => {
-  const listId = await getOrCreateDefaultList(c.env);
+  const listId = c.req.query("list_id");
+  if (!listId) return c.json({ error: "list_id est requis" }, 400);
+
+  const list = await c.env.DB.prepare("SELECT sort_mode FROM grocery_lists WHERE id = ?")
+    .bind(listId)
+    .first<{ sort_mode: string }>();
+
+  // In manual mode the user's own order is the only thing that matters, so
+  // the aisle join is only for display. Items predating the position
+  // backfill sort by id, which is the order they were added.
+  //
+  // Category mode keeps the aisle order the client then re-sorts by the
+  // list's store order (see the grouping in GroceryList). COALESCE, because
+  // an uncategorized item joins to a NULL sort order and SQLite sorts NULLs
+  // first in ASC — which put "Autres / Non classé" at the TOP of the list.
+  // It belongs at the bottom, especially now that items can be moved into
+  // that bucket deliberately.
+  const orderBy =
+    list?.sort_mode === "manual"
+      ? "COALESCE(gi.position, 999999) ASC, gi.id ASC"
+      : "COALESCE(c.default_sort_order, 999) ASC, gi.id ASC";
+
   const { results } = await c.env.DB.prepare(
     `SELECT gi.*, c.name AS category_name, c.default_sort_order, c.is_custom AS category_is_custom
      FROM grocery_items gi
      LEFT JOIN categories c ON c.id = gi.category_id
      WHERE gi.list_id = ?
-     ORDER BY c.default_sort_order ASC, gi.id ASC`
+     ORDER BY ${orderBy}`
   )
     .bind(listId)
     .all();
   return c.json(results);
+});
+
+// Rewrites one list's order as a dense 1..N sequence. Sending the full order
+// rather than a single moved item keeps the client and server from
+// disagreeing about what the neighbouring positions were, and with a list
+// this size the extra statements cost nothing.
+//
+// The full order really is required: renumbering a subset from 1 would give
+// those items positions that already belong to the items left out, and the
+// list would come back interleaved. A payload that doesn't cover the list
+// exactly once is rejected rather than half-applied — it means the client
+// was working from a stale list, and refetching is the right recovery.
+app.put("/api/grocery-lists/:id/order", async (c) => {
+  const listId = c.req.param("id");
+  const body = await c.req.json<{ ids?: number[] }>();
+  if (!Array.isArray(body.ids)) {
+    return c.json({ error: "Un ordre est attendu" }, 400);
+  }
+
+  const { results } = await c.env.DB.prepare(
+    "SELECT id FROM grocery_items WHERE list_id = ?"
+  )
+    .bind(listId)
+    .all<{ id: number }>();
+  const inList = new Set(results.map((row) => row.id));
+
+  const seen = new Set(body.ids);
+  if (
+    seen.size !== body.ids.length ||
+    seen.size !== inList.size ||
+    body.ids.some((id) => !inList.has(id))
+  ) {
+    return c.json({ error: "L'ordre envoyé ne correspond plus à la liste" }, 409);
+  }
+
+  await c.env.DB.batch(
+    body.ids.map((id, index) =>
+      c.env.DB.prepare("UPDATE grocery_items SET position = ? WHERE id = ?").bind(
+        index + 1,
+        id
+      )
+    )
+  );
+
+  return c.json({ ok: true });
 });
 
 interface GroceryItemPayload {
@@ -614,6 +1369,7 @@ interface GroceryItemPayload {
   unit?: string;
   category_id?: number;
   recipe_id?: number;
+  list_id: number;
 }
 
 // Cross-language recognition + merge (Phase 2): the item's free-text name is
@@ -626,9 +1382,12 @@ interface GroceryItemPayload {
 // is never rewritten by this; the dictionary only drives categorization and
 // merge-matching.
 app.post("/api/grocery-items", async (c) => {
-  const listId = await getOrCreateDefaultList(c.env);
   const body = await c.req.json<GroceryItemPayload>();
 
+  if (!body.list_id) {
+    return c.json({ error: "list_id est requis" }, 400);
+  }
+  const listId = body.list_id;
   if (!body.name || !body.name.trim()) {
     return c.json({ error: "Le nom de l'article est obligatoire" }, 400);
   }
@@ -681,12 +1440,35 @@ app.post("/api/grocery-items", async (c) => {
     await c.env.DB.prepare("UPDATE grocery_items SET quantity = ?, name = ? WHERE id = ?")
       .bind(target.mergedQuantity, updatedName, target.row.id)
       .run();
-    return c.json({ id: target.row.id }, 200);
+    // Report the merge rather than just returning an id. The incoming name
+    // is intentionally discarded here (the existing line keeps its own), but
+    // when the two names differ — "sucre en poudre" folding into "sucre" —
+    // that looks like the app ignored what was typed. The caller uses this
+    // to say what happened and point at the food dictionary, where giving
+    // the more specific name its own entry separates the two for good.
+    return c.json({ id: target.row.id, merged: true, merged_into: updatedName }, 200);
   }
 
+  // New items land at the end of the manual order. A merge (above) returns
+  // before this and leaves the target's position untouched, so absorbing a
+  // duplicate never moves a line the user placed deliberately.
+  //
+  // Read the next position with its own statement rather than as a subquery
+  // inside the INSERT's VALUES. Same result, but plain parameterised
+  // statements are the path D1 is happiest with, and an insert that reads
+  // from the table it writes to is the kind of construct worth not relying
+  // on. Two lists being added to at the same instant could pick the same
+  // position; that only affects tie order in manual mode and the next drag
+  // rewrites every position anyway.
+  const nextPosition = await c.env.DB.prepare(
+    "SELECT COALESCE(MAX(position), 0) + 1 AS next FROM grocery_items WHERE list_id = ?"
+  )
+    .bind(listId)
+    .first<{ next: number }>();
+
   const result = await c.env.DB.prepare(
-    `INSERT INTO grocery_items (list_id, name, quantity, unit, category_id, recipe_id, food_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO grocery_items (list_id, name, quantity, unit, category_id, recipe_id, food_id, position)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       listId,
@@ -695,7 +1477,8 @@ app.post("/api/grocery-items", async (c) => {
       unit,
       categoryId,
       body.recipe_id ?? null,
-      foodId
+      foodId,
+      nextPosition?.next ?? 1
     )
     .run();
 
@@ -708,6 +1491,8 @@ app.patch("/api/grocery-items/:id", async (c) => {
     is_checked?: boolean;
     quantity?: number | null;
     unit?: string | null;
+    category_id?: number | null;
+    remember_category?: boolean;
   }>();
 
   if (body.is_checked !== undefined) {
@@ -740,12 +1525,69 @@ app.patch("/api/grocery-items/:id", async (c) => {
       .run();
   }
 
+  // Manual aisle correction. An explicit null moves the item to the
+  // "Autres / Non classé" bucket, which is stored as NULL rather than as
+  // category 17 — same reasoning as the category delete handler above.
+  if (body.category_id !== undefined) {
+    if (body.category_id !== null) {
+      const category = await c.env.DB.prepare("SELECT id FROM categories WHERE id = ?")
+        .bind(body.category_id)
+        .first<{ id: number }>();
+      if (!category) return c.json({ error: "Catégorie introuvable" }, 400);
+    }
+
+    const statements = [
+      c.env.DB.prepare("UPDATE grocery_items SET category_id = ? WHERE id = ?").bind(
+        body.category_id,
+        id
+      ),
+    ];
+
+    // Opt-in: re-file the underlying food too, so future adds land in the
+    // corrected aisle. Without this the category is re-derived from the
+    // dictionary on every add (see POST above) and the correction lasts
+    // only as long as this one row. Items with no dictionary match have
+    // nothing to teach, so the flag is a no-op for them.
+    if (body.remember_category) {
+      const row = await c.env.DB.prepare("SELECT food_id FROM grocery_items WHERE id = ?")
+        .bind(id)
+        .first<{ food_id: number | null }>();
+      if (row?.food_id != null) {
+        statements.push(
+          c.env.DB.prepare("UPDATE food_dictionary SET category_id = ? WHERE id = ?").bind(
+            body.category_id,
+            row.food_id
+          )
+        );
+      }
+    }
+
+    await c.env.DB.batch(statements);
+  }
+
   return c.json({ ok: true });
 });
 
 app.delete("/api/grocery-items/:id", async (c) => {
   const id = c.req.param("id");
   await c.env.DB.prepare("DELETE FROM grocery_items WHERE id = ?")
+    .bind(id)
+    .run();
+  return c.json({ ok: true });
+});
+
+// Bulk clear for a list — "checked_only=1" removes just the found/bought
+// items (post-shopping cleanup), otherwise the whole list is emptied. A
+// single statement rather than N individual deletes, since this is exactly
+// "delete everything matching a condition," not a user-picked subset.
+app.delete("/api/grocery-lists/:id/items", async (c) => {
+  const id = c.req.param("id");
+  const checkedOnly = c.req.query("checked_only") === "1";
+  await c.env.DB.prepare(
+    checkedOnly
+      ? "DELETE FROM grocery_items WHERE list_id = ? AND is_checked = 1"
+      : "DELETE FROM grocery_items WHERE list_id = ?"
+  )
     .bind(id)
     .run();
   return c.json({ ok: true });

@@ -1,5 +1,11 @@
 const TOKEN_KEY = "session_token";
 
+// Shared between GroceryList (which list tab opens by default) and
+// AddToListReview (which list an add defaults to / lands on) — the same
+// key so adding items to a list also makes that the one you see on
+// /courses afterward, instead of the two staying independently "last used."
+export const ACTIVE_GROCERY_LIST_KEY = "active_grocery_list_id";
+
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
@@ -122,15 +128,64 @@ export const api = {
   deleteCategory: (id: number) =>
     request<{ ok: true }>(`/api/categories/${id}`, { method: "DELETE" }),
 
-  getGroceryItems: () => request<GroceryItem[]>("/api/grocery-items"),
+  getStores: () => request<Store[]>("/api/stores"),
+
+  createStore: (name: string) =>
+    request<{ id: number }>("/api/stores", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+
+  renameStore: (id: number, name: string) =>
+    request<{ ok: true }>(`/api/stores/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ name }),
+    }),
+
+  deleteStore: (id: number) =>
+    request<{ ok: true }>(`/api/stores/${id}`, { method: "DELETE" }),
+
+  getStoreCategoryOrder: (storeId: number) =>
+    request<StoreCategoryOrderEntry[]>(`/api/stores/${storeId}/category-order`),
+
+  setStoreCategoryOrder: (storeId: number, categoryIds: number[]) =>
+    request<{ ok: true }>(`/api/stores/${storeId}/category-order`, {
+      method: "PUT",
+      body: JSON.stringify({ category_ids: categoryIds }),
+    }),
+
+  getGroceryLists: () => request<GroceryList[]>("/api/grocery-lists"),
+
+  createGroceryList: (name: string, storeId?: number | null) =>
+    request<{ id: number }>("/api/grocery-lists", {
+      method: "POST",
+      body: JSON.stringify({ name, store_id: storeId ?? null }),
+    }),
+
+  updateGroceryList: (
+    id: number,
+    payload: { name?: string; store_id?: number | null; sort_mode?: SortMode }
+  ) =>
+    request<{ ok: true }>(`/api/grocery-lists/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+
+  deleteGroceryList: (id: number) =>
+    request<{ ok: true }>(`/api/grocery-lists/${id}`, { method: "DELETE" }),
+
+  getGroceryItems: (listId: number) =>
+    request<GroceryItem[]>(`/api/grocery-items?list_id=${listId}`),
 
   addGroceryItem: (payload: {
     name: string;
     quantity?: number;
     unit?: string;
     category_id?: number;
+    recipe_id?: number;
+    list_id: number;
   }) =>
-    request<{ id: number }>("/api/grocery-items", {
+    request<AddGroceryItemResult>("/api/grocery-items", {
       method: "POST",
       body: JSON.stringify(payload),
     }),
@@ -147,8 +202,72 @@ export const api = {
       body: JSON.stringify({ quantity, unit }),
     }),
 
+  // `category_id: null` files the item under "Autres / Non classé".
+  // `remember` also re-files the underlying food in the dictionary, so
+  // future adds of the same item land in this aisle too.
+  updateGroceryItemCategory: (
+    id: number,
+    category_id: number | null,
+    remember: boolean
+  ) =>
+    request<{ ok: true }>(`/api/grocery-items/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ category_id, remember_category: remember }),
+    }),
+
+  // The full order, not a single move — see the endpoint's note.
+  reorderGroceryItems: (listId: number, ids: number[]) =>
+    request<{ ok: true }>(`/api/grocery-lists/${listId}/order`, {
+      method: "PUT",
+      body: JSON.stringify({ ids }),
+    }),
+
+  getFoods: () => request<Food[]>("/api/foods"),
+
+  createFood: (canonical_name: string, category_id: number | null, lang: string) =>
+    request<{ id: number }>("/api/foods", {
+      method: "POST",
+      body: JSON.stringify({ canonical_name, category_id, lang }),
+    }),
+
+  updateFood: (id: number, payload: { canonical_name?: string; category_id?: number | null }) =>
+    request<{ ok: true }>(`/api/foods/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+
+  deleteFood: (id: number) =>
+    request<{ ok: true }>(`/api/foods/${id}`, { method: "DELETE" }),
+
+  addFoodAlias: (foodId: number, alias: string, lang: string) =>
+    request<{ id: number }>(`/api/foods/${foodId}/aliases`, {
+      method: "POST",
+      body: JSON.stringify({ alias, lang }),
+    }),
+
+  deleteFoodAlias: (aliasId: number) =>
+    request<{ ok: true }>(`/api/aliases/${aliasId}`, { method: "DELETE" }),
+
   deleteGroceryItem: (id: number) =>
     request<{ ok: true }>(`/api/grocery-items/${id}`, { method: "DELETE" }),
+
+  clearGroceryItems: (listId: number, checkedOnly: boolean) =>
+    request<{ ok: true }>(
+      `/api/grocery-lists/${listId}/items${checkedOnly ? "?checked_only=1" : ""}`,
+      { method: "DELETE" }
+    ),
+
+  getMealPlan: (start: string, end: string) =>
+    request<MealPlanEntry[]>(`/api/meal-plan?start=${start}&end=${end}`),
+
+  setMealPlanEntry: (payload: { date: string; recipe_id: number; servings?: number }) =>
+    request<{ ok: true }>("/api/meal-plan", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  deleteMealPlanEntry: (id: number) =>
+    request<{ ok: true }>(`/api/meal-plan/${id}`, { method: "DELETE" }),
 };
 
 // ---------------------------------------------------------------------------
@@ -235,8 +354,69 @@ export interface Category {
   default_sort_order: number;
 }
 
+export interface Store {
+  id: number;
+  name: string;
+  created_at: string;
+}
+
+export interface StoreCategoryOrderEntry {
+  category_id: number;
+  sort_order: number;
+}
+
+// "category" groups the list by aisle (using the store's order when the list
+// has a store); "manual" is one flat list in the order the user dragged
+// things into. Per list, so one store can be manual and another by aisle.
+export type SortMode = "category" | "manual";
+
+export interface GroceryList {
+  id: number;
+  name: string;
+  store_id: number | null;
+  store_name: string | null;
+  sort_mode: SortMode;
+  created_at: string;
+}
+
+export interface MealPlanEntry {
+  id: number;
+  date: string;
+  recipe_id: number;
+  servings: number | null;
+  notes: string | null;
+  recipe_title: string;
+  recipe_photo_url: string | null;
+  recipe_servings: number | null;
+  ingredients: Ingredient[];
+}
+
+export interface FoodAlias {
+  id: number;
+  alias: string;
+  lang: string;
+}
+
+export interface Food {
+  id: number;
+  canonical_name: string;
+  category_id: number | null;
+  category_name: string | null;
+  aliases: FoodAlias[];
+}
+
+// Adding an item can fold into an existing line instead of creating a new
+// one. When it does, `merged_into` is the name of the line that absorbed it —
+// which may differ from what was typed.
+export interface AddGroceryItemResult {
+  id: number;
+  merged?: boolean;
+  merged_into?: string;
+}
+
 export interface GroceryItem {
   id: number;
+  list_id: number;
   name: string;
   quantity: number | null;
   unit: string | null;
@@ -244,5 +424,9 @@ export interface GroceryItem {
   category_name: string | null;
   category_is_custom: number | null;
   recipe_id: number | null;
+  // The dictionary entry this item matched, if any. Null means the name
+  // wasn't recognized — such an item has no food to teach, so the
+  // "remember this aisle" option doesn't apply to it.
+  food_id: number | null;
   is_checked: number;
 }

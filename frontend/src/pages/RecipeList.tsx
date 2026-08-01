@@ -9,6 +9,12 @@ export default function RecipeList() {
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [showTags, setShowTags] = useState(false);
+
+  // Force the tag row open if a tag filter is active, even if the user
+  // hasn't toggled it open — otherwise there'd be no way to see which tag
+  // is filtering the list, or to clear it.
+  const tagsVisible = showTags || activeTag !== null;
 
   useEffect(() => {
     api.getTags().then(setTags).catch(() => {});
@@ -42,7 +48,7 @@ export default function RecipeList() {
                    focus:border-sage focus:outline-none"
       />
 
-      <div className="mt-3 flex flex-wrap gap-2">
+      <div className="mt-3 flex flex-wrap items-center gap-2">
         <button
           onClick={() => setFavoritesOnly((v) => !v)}
           className={`rounded-full border px-3 py-1 text-sm transition-colors ${
@@ -53,20 +59,43 @@ export default function RecipeList() {
         >
           ★ Favoris
         </button>
-        {tags.map((t) => (
+        {tags.length > 0 && !tagsVisible && (
           <button
-            key={t.id}
-            onClick={() => setActiveTag(activeTag === t.name ? null : t.name)}
-            className={`rounded-full border px-3 py-1 text-sm transition-colors ${
-              activeTag === t.name
-                ? "border-sage bg-sage/15 text-sage-dark"
-                : "border-line text-ink/60 hover:border-ink/30"
-            }`}
+            type="button"
+            onClick={() => setShowTags(true)}
+            className="text-xs font-medium text-sage-dark hover:underline"
           >
-            {t.name}
+            Afficher les tags
           </button>
-        ))}
+        )}
       </div>
+
+      {tagsVisible && tags.length > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {tags.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setActiveTag(activeTag === t.name ? null : t.name)}
+              className={`rounded-full border px-3 py-1 text-sm transition-colors ${
+                activeTag === t.name
+                  ? "border-sage bg-sage/15 text-sage-dark"
+                  : "border-line text-ink/60 hover:border-ink/30"
+              }`}
+            >
+              {t.name}
+            </button>
+          ))}
+          {showTags && (
+            <button
+              type="button"
+              onClick={() => setShowTags(false)}
+              className="text-xs font-medium text-sage-dark hover:underline"
+            >
+              Masquer les tags
+            </button>
+          )}
+        </div>
+      )}
 
       {loading ? (
         <p className="mt-10 text-center text-ink/40">Chargement…</p>
@@ -102,7 +131,11 @@ export default function RecipeList() {
                 <div className="flex flex-1 flex-col justify-center px-3 py-2">
                   <h2 className="font-display text-lg leading-tight">{r.title}</h2>
                   <p className="mt-0.5 text-xs text-ink/50">
-                    {[r.prep_time && `${r.prep_time} min prép.`, r.difficulty]
+                    {[
+                      r.prep_time && `${r.prep_time} min prép.`,
+                      r.cook_time && `${r.cook_time} min cuisson`,
+                      r.difficulty,
+                    ]
                       .filter(Boolean)
                       .join(" · ")}
                   </p>

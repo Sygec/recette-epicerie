@@ -1,44 +1,38 @@
 import { NavLink } from "react-router-dom";
+import { BookOpen, Calendar, Plus, ShoppingCart, Tags, type LucideIcon } from "lucide-react";
 
-const linkBase =
-  "flex flex-col items-center gap-1 px-4 py-2 text-xs font-medium transition-colors";
+const items: { to: string; end?: boolean; label: string; icon: LucideIcon }[] = [
+  { to: "/", end: true, label: "Recettes", icon: BookOpen },
+  { to: "/courses", label: "Courses", icon: ShoppingCart },
+  { to: "/planification", label: "Planifier", icon: Calendar },
+  { to: "/dictionnaire", label: "Aliments", icon: Tags },
+  { to: "/recettes/nouvelle", label: "Ajouter", icon: Plus },
+];
 
 export default function Nav() {
   return (
     <nav
-      className="fixed bottom-0 left-0 right-0 z-20 flex justify-around
-                 border-t border-line bg-paper/95 backdrop-blur
-                 pb-[env(safe-area-inset-bottom)]
-                 sm:sticky sm:top-0 sm:justify-start sm:gap-2 sm:border-b sm:border-t-0 sm:px-6 sm:py-3"
+      className="fixed bottom-[calc(env(safe-area-inset-bottom)+1rem)] left-2 right-2 z-20
+                 flex items-center justify-around gap-0 rounded-full bg-white px-1 py-2
+                 shadow-lg shadow-ink/15
+                 sm:sticky sm:bottom-auto sm:left-auto sm:right-auto sm:top-4 sm:mx-6
+                 sm:w-fit sm:justify-start sm:gap-2 sm:px-2 sm:shadow-md"
     >
-      <NavLink
-        to="/"
-        end
-        className={({ isActive }) =>
-          `${linkBase} ${isActive ? "text-sage-dark" : "text-ink/50 hover:text-ink"}`
-        }
-      >
-        <span aria-hidden>📖</span>
-        Recettes
-      </NavLink>
-      <NavLink
-        to="/courses"
-        className={({ isActive }) =>
-          `${linkBase} ${isActive ? "text-sage-dark" : "text-ink/50 hover:text-ink"}`
-        }
-      >
-        <span aria-hidden>🧺</span>
-        Courses
-      </NavLink>
-      <NavLink
-        to="/recettes/nouvelle"
-        className={({ isActive }) =>
-          `${linkBase} ${isActive ? "text-sage-dark" : "text-ink/50 hover:text-ink"}`
-        }
-      >
-        <span aria-hidden>＋</span>
-        Ajouter
-      </NavLink>
+      {items.map(({ to, end, label, icon: Icon }) => (
+        <NavLink
+          key={to}
+          to={to}
+          end={end}
+          className={({ isActive }) =>
+            `flex flex-1 flex-col items-center gap-0.5 rounded-full px-1 py-2 text-[11px] font-medium leading-tight transition-colors sm:flex-none sm:px-4 sm:text-xs ${
+              isActive ? "bg-ink/[0.06] text-sage-dark" : "text-ink/70 hover:text-ink"
+            }`
+          }
+        >
+          <Icon size={20} strokeWidth={2} aria-hidden className="sm:h-[22px] sm:w-[22px]" />
+          {label}
+        </NavLink>
+      ))}
     </nav>
   );
 }

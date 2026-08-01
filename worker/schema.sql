@@ -84,10 +84,32 @@ CREATE TABLE IF NOT EXISTS categories (
   default_sort_order INTEGER DEFAULT 0
 );
 
+-- A grocery list has at most one store (Phase 3): the store both labels the
+-- list ("IGA", "Costco") and drives its aisle ordering via
+-- store_category_order below. A list without a store just uses categories'
+-- default_sort_order.
+CREATE TABLE IF NOT EXISTS stores (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS store_category_order (
+  store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+  category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+  sort_order INTEGER NOT NULL,
+  PRIMARY KEY (store_id, category_id)
+);
+
 CREATE TABLE IF NOT EXISTS grocery_lists (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL DEFAULT 'Liste de courses',
-  active_store_id INTEGER,
+  store_id INTEGER REFERENCES stores(id),
+  -- 'category' groups by aisle, using the store's own order when it has one;
+  -- 'manual' is one flat list in whatever order the user dragged things
+  -- into. Per list, so a Costco list can be manual while the IGA list stays
+  -- grouped by aisle.
+  sort_mode TEXT NOT NULL DEFAULT 'category',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -100,6 +122,10 @@ CREATE TABLE IF NOT EXISTS grocery_items (
   category_id INTEGER REFERENCES categories(id),
   recipe_id INTEGER REFERENCES recipes(id),
   food_id INTEGER REFERENCES food_dictionary(id),
+  -- Rank within its list when the list's sort_mode is 'manual'. Rewritten as
+  -- a dense 1..N sequence on every reorder — a list is small enough that
+  -- this beats gap or fractional indexing, and it can't drift.
+  position INTEGER,
   is_checked INTEGER NOT NULL DEFAULT 0
 );
 
@@ -321,3 +347,19 @@ INSERT INTO food_aliases (food_id, alias, lang) VALUES
   (79, 'moutarde de dijon', 'fr'), (79, 'dijon mustard', 'en'),
   (80, 'moutarde à l''ancienne', 'fr'), (80, 'whole-grain mustard', 'en'), (80, 'wholegrain mustard', 'en'), (80, 'whole grain mustard', 'en')
 ON CONFLICT(alias) DO NOTHING;
+
+-- ---------------------------------------------------------------------------
+-- Meal planning (Phase 3) — one planned souper (dinner) per day. No separate
+-- week/month entity: a week view is just "entries whose date falls in this
+-- range," computed client-side.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS meal_plan_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL UNIQUE,
+  recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  servings INTEGER,
+  notes TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_meal_plan_entries_date ON meal_plan_entries(date);

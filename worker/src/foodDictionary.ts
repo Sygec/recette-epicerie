@@ -113,7 +113,7 @@ const UNIT_SYNONYM_GROUPS: string[][] = [
   ["botte", "bunch"],
 ];
 
-function canonicalUnit(unit: string): string {
+export function canonicalUnit(unit: string): string {
   const normalized = normalizeFoodText(unit);
   // Cheap plural fold for units not covered by the synonym groups above
   // (tablespoon/tablespoons, teaspoon/teaspoons, gram/grams...). Guarded by
