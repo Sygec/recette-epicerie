@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { segmentStep } from "../lib/ingredientMatch";
 
 export interface StepIngredient {
@@ -23,6 +23,58 @@ interface Props {
 function amountLabel(ing: StepIngredient): string {
   const amount = [ing.quantity ?? "", ing.unit ?? ""].join(" ").trim();
   return amount || "Quantité non précisée";
+}
+
+
+// Centred over the word it belongs to, which puts it off-screen for a mention
+// near either edge of the paragraph. Rather than reach for a positioning
+// library, measure once after mounting and nudge it back inside the viewport.
+// Mounted fresh per mention, so the offset always starts from zero.
+function MentionTooltip({
+  id,
+  amount,
+  name,
+}: {
+  id: string;
+  amount: string;
+  name: string;
+}) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [shift, setShift] = useState(0);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    // clientWidth, not innerWidth: it excludes any scrollbar, and under
+    // mobile emulation innerWidth reports the layout viewport, which is not
+    // what the tooltip is visually clipped against.
+    const viewportWidth = document.documentElement.clientWidth;
+    const margin = 8;
+    let dx = 0;
+    if (rect.left < margin) dx = margin - rect.left;
+    else if (rect.right > viewportWidth - margin) {
+      dx = viewportWidth - margin - rect.right;
+    }
+    // Only ever one correction: the shift moves the box without resizing it,
+    // so a single pass is enough and this can't oscillate.
+    if (dx !== 0) setShift(dx);
+  }, []);
+
+  return (
+    <span
+      ref={ref}
+      role="tooltip"
+      id={id}
+      style={{ transform: `translateX(calc(-50% + ${shift}px))` }}
+      className="absolute bottom-full left-1/2 z-30 mb-1 w-max max-w-[min(16rem,80vw)]
+                 rounded-card border border-line bg-white px-2 py-1 text-left
+                 text-xs font-normal leading-snug text-ink shadow-lg shadow-ink/10"
+    >
+      <span className="block font-mono font-medium text-sage-dark">{amount}</span>
+      <span className="block text-ink/60">{name}</span>
+    </span>
+  );
 }
 
 // Renders a step with its ingredient mentions highlighted; each one shows the
@@ -98,19 +150,11 @@ export default function StepText({
             </button>
 
             {isOpen && (
-              <span
-                role="tooltip"
+              <MentionTooltip
                 id={`tip-${key}`}
-                className="absolute bottom-full left-1/2 z-30 mb-1 w-max max-w-[60vw]
-                           -translate-x-1/2 rounded-card border border-line bg-white
-                           px-2 py-1 text-left text-xs font-normal leading-snug
-                           text-ink shadow-lg shadow-ink/10"
-              >
-                <span className="block font-mono font-medium text-sage-dark">
-                  {amountLabel(ingredient)}
-                </span>
-                <span className="block text-ink/60">{ingredient.name}</span>
-              </span>
+                amount={amountLabel(ingredient)}
+                name={ingredient.name}
+              />
             )}
           </span>
         );
