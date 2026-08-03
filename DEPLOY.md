@@ -92,27 +92,112 @@ every kind of change.
 
 ## Automatic deploys (Cloudflare Workers Builds)
 
-Pushes to `dev` build and deploy to staging automatically. That is configured
-in the Cloudflare dashboard, under the Worker's **Settings → Build**, and it
-needs these three values:
+There are **two** Worker projects, one per environment, each watching its own
+branch:
+
+| Cloudflare project | Production branch | Deploys to |
+| --- | --- | --- |
+| `recipe-grocery-worker-staging` | `dev` | staging |
+| `recipe-grocery-worker` | `main` | production |
+
+Both are configured in the Cloudflare dashboard under **Settings → Build**.
+These are per-project settings: filling them in on one does nothing for the
+other.
+
+**The one rule that matters: wrangler must run from `worker/`.** That is where
+`wrangler.toml` lives, and wrangler started anywhere else fails with "Missing
+entry-point to Worker script or to assets directory". There are two ways to
+satisfy it, and the two projects happen to use one each — either is fine, but
+don't mix halves of them.
+
+*Path `worker`, and let the npm scripts do the rest:*
 
 | Setting | Value |
 | --- | --- |
-| Root directory | `worker` |
+| Path (root directory) | `worker` |
 | Build command | *(leave empty)* |
 | Deploy command | `npm run deploy:ci` |
-
-**Root directory must be `worker`** — `wrangler.toml` lives there, and running
-wrangler from the repo root fails with "Missing entry-point to Worker script or
-to assets directory". A quick way to spot that mistake in the build log: if npm
-has to *install* wrangler (`npm warn exec ... will be installed`) rather than
-using the version pinned in `worker/package.json`, it is running from the wrong
-directory.
 
 The build command stays empty because `deploy:ci` already builds the frontend
 through its own `predeploy:ci` hook. Keeping that logic in `package.json`
 rather than in the dashboard means it is version-controlled and identical to
 what a local deploy does.
+
+*Or Path `/`, with each command changing directory itself* — which is what
+`recipe-grocery-worker` does today:
+
+| Setting | Value |
+| --- | --- |
+| Path (root directory) | `/` |
+| Build command | `cd frontend && npm install && npm run build` |
+| Deploy command | `cd worker && npm install && npx wrangler deploy --env=""` |
+
+Here the build command builds the frontend, so `wrangler deploy` finds
+`../frontend/dist` already waiting. Every command that touches wrangler needs
+its own `cd worker` — including the non-production one below, which is where
+this bit us.
+
+A quick way to spot a command running from the wrong directory: if the build
+log shows npm *installing* wrangler (`npm warn exec ... will be installed`)
+rather than using the version pinned in `worker/package.json`, it is not in
+`worker/`.
+
+### Non-production branches
+
+Each project has a *third* field, **Non-production branch deploy command**, run
+instead of the deploy command for pushes to any branch that isn't that
+project's production branch. It is marked optional, but optional means "fall
+back to the default" — `npx wrangler versions upload` — not "do nothing".
+Clearing the field does not switch the build off.
+
+**"Non-production branch" is relative to the project, and each project treats
+the other's branch as one.** This is the piece neither settings page tells you,
+because each shows only its own production branch. A project builds *every*
+branch, so one push starts a build on both, and each picks a different command:
+
+| Push to... | `recipe-grocery-worker-staging` runs | `recipe-grocery-worker` runs |
+| --- | --- | --- |
+| `dev` | its deploy command *(production branch)* | its non-production command |
+| `main` | its non-production command | its deploy command *(production branch)* |
+
+So `main` is a non-production branch as far as staging is concerned, exactly as
+`dev` is to production.
+
+Whether that second build fails depends on nothing but the project's Path.
+Under Path `worker` the bare default already runs in the right directory and
+succeeds; under Path `/` it runs at the repo root, finds no `wrangler.toml`,
+and fails with "Missing entry-point". Identical command, opposite outcome —
+which is why this bit `recipe-grocery-worker` and may never have touched
+staging.
+
+That is what happened here. Every push to `dev` failed a build on the
+*production* project, and GitHub showed a red **"Workers Builds:
+recipe-grocery-worker"** check on the pull request, which reads as "production
+is broken" while production was perfectly fine. Two pull requests were merged
+over that check before anyone opened the log. To fix the command rather than
+the build, give it the same `cd worker` the deploy command already has:
+
+```
+cd worker && npm install && npx wrangler versions upload
+```
+
+Two things make this failure easy to misread, both worth remembering:
+
+- `versions upload` only uploads a version — it never shifts traffic. A failure
+  there cannot have broken a running deployment, whatever the check says.
+- Cloudflare stamps the GitHub check when the build ends, so the API reports
+  identical start and end times for a build that ran for minutes. That looks
+  like a build that was skipped and never ran. Read the log, not the
+  timestamps.
+
+Fixing the command is not the only option, and probably not the best one. Even
+when the build succeeds it uploads a version built from the *other*
+environment's branch — harmless, since traffic never moves, but it leaves each
+Worker's version list mixed and confusing to read later. Turning non-production
+branch builds off on **both** projects, under **Settings → Build → Branch
+control**, is the tidy answer: each project then builds only its own branch,
+and pull requests stop carrying a check about the environment they are not
+touching.
 
 ## Database migrations
 
@@ -211,5 +296,15 @@ Then open the Vite URL it prints (usually http://localhost:5173). It proxies
 - **`wrangler deploy` complains it can't find `../frontend/dist`** — you ran
   `npx wrangler deploy` directly, which skips the build hook. Use
   `npm run deploy` instead.
-- **A Workers build fails with "Missing entry-point to Worker script"** — the
-  build's root directory isn't `worker`. See the table above.
+- **A Workers build fails with "Missing entry-point to Worker script"** — that
+  command isn't running in `worker/`. Either the Path setting or a `cd worker`
+  in front of it has to put it there. See the tables above.
+- **A pull request into `main` shows a red "Workers Builds:
+  recipe-grocery-worker" check** — most likely the production project building
+  the *source* branch with its non-production command, not production failing.
+  Check the log: if the deploy step ran wrangler without a `cd worker` in front
+  of it, that is what happened. See "Non-production branches".
+- **A build check reports a failure with no duration** — Cloudflare stamps the
+  GitHub check when the build ends, so the API can show identical start and
+  end times for a build that ran for minutes. Read the build log rather than
+  the timestamps.
