@@ -98,6 +98,15 @@ export const api = {
       body: JSON.stringify({ url }),
     }),
 
+  // Same preview shape as a URL import, so the form is populated identically.
+  // Takes already-extracted text: the PDF is read in the browser (see
+  // lib/pdfText.ts) and the server only interprets what it's given.
+  importRecipeText: (text: string) =>
+    request<ImportedRecipe>("/api/recipes/import-text", {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    }),
+
   setPhotoFromUrl: (id: number, url: string) =>
     request<{ photo_url: string }>(`/api/recipes/${id}/photo-from-url`, {
       method: "POST",
@@ -343,7 +352,9 @@ export interface ImportedRecipe {
   steps: string[];
   tags: string[];
   image_url?: string;
-  source: "json-ld" | "fallback";
+  // Set by the PDF importer when the document prints its own address.
+  source_url?: string;
+  source: "json-ld" | "fallback" | "pdf";
   warning?: string;
 }
 

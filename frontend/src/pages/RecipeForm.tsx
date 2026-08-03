@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { api } from "../lib/api";
+import { api, ImportedRecipe } from "../lib/api";
 
 interface IngredientRow {
   name: string;
@@ -66,6 +66,33 @@ export default function RecipeForm() {
     });
   }, [id, isEdit]);
 
+  // Shared by both importers so a URL and a PDF fill the form identically.
+  // Empty arrays collapse to one blank row rather than nothing, so the form is
+  // never left with no ingredient or step to type into.
+  function applyImported(imported: ImportedRecipe) {
+    setTitle(imported.title);
+    setDescription(imported.description ?? "");
+    setServings(imported.servings?.toString() ?? "");
+    setPrepTime(imported.prep_time?.toString() ?? "");
+    setCookTime(imported.cook_time?.toString() ?? "");
+    setTagsInput(imported.tags.join(", "));
+    setIngredients(
+      imported.ingredients.length
+        ? imported.ingredients.map((i) => ({
+            name: i.name,
+            quantity: i.quantity?.toString() ?? "",
+            unit: i.unit ?? "",
+          }))
+        : [{ name: "", quantity: "", unit: "" }]
+    );
+    setSteps(imported.steps.length ? imported.steps : [""]);
+    // Only the PDF importer reports one, and the URL path overwrites it with
+    // the address that was actually fetched.
+    setSourceUrl(imported.source_url ?? "");
+    setImportedImageUrl(imported.image_url ?? null);
+    setImportWarning(imported.warning ?? null);
+  }
+
   async function handleImport() {
     if (!importUrl.trim()) return;
     setImporting(true);
@@ -73,28 +100,31 @@ export default function RecipeForm() {
     setImportWarning(null);
     try {
       const imported = await api.importRecipe(importUrl.trim());
-      setTitle(imported.title);
-      setDescription(imported.description ?? "");
-      setServings(imported.servings?.toString() ?? "");
-      setPrepTime(imported.prep_time?.toString() ?? "");
-      setCookTime(imported.cook_time?.toString() ?? "");
+      applyImported(imported);
       setSourceUrl(importUrl.trim());
-      setTagsInput(imported.tags.join(", "));
-      setIngredients(
-        imported.ingredients.length
-          ? imported.ingredients.map((i) => ({
-              name: i.name,
-              quantity: i.quantity?.toString() ?? "",
-              unit: i.unit ?? "",
-            }))
-          : [{ name: "", quantity: "", unit: "" }]
-      );
-      setSteps(imported.steps.length ? imported.steps : [""]);
-      setImportedImageUrl(imported.image_url ?? null);
-      if (imported.warning) setImportWarning(imported.warning);
     } catch (err) {
       setImportError(
         err instanceof Error ? err.message : "Impossible d'importer cette recette"
+      );
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  // The PDF is read here rather than uploaded: extraction happens in the
+  // browser and only the text is sent. Nothing extra is set afterwards — a PDF
+  // has no image, and any source URL it prints comes back in the parse.
+  async function handleImportPdf(file: File) {
+    setImporting(true);
+    setImportError(null);
+    setImportWarning(null);
+    try {
+      const { extractPdfText } = await import("../lib/pdfText");
+      const text = await extractPdfText(file);
+      applyImported(await api.importRecipeText(text));
+    } catch (err) {
+      setImportError(
+        err instanceof Error ? err.message : "Impossible d'importer ce PDF"
       );
     } finally {
       setImporting(false);
@@ -220,6 +250,24 @@ export default function RecipeForm() {
           </div>
           <p className="mt-1.5 text-xs text-ink/50">
             Fonctionne mieux sur les sites de recettes ; vous pourrez toujours modifier le résultat avant d'enregistrer.
+          </p>
+
+          <p className={`${labelClass} mt-4`}>…ou depuis un PDF</p>
+          <input
+            type="file"
+            accept="application/pdf,.pdf"
+            disabled={importing}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              // Reset the input so picking the same file twice still fires.
+              e.target.value = "";
+              if (file) handleImportPdf(file);
+            }}
+            className={`${rowInputClass} mt-1 w-full py-1.5`}
+          />
+          <p className="mt-1.5 text-xs text-ink/50">
+            Une recette enregistrée ou imprimée en PDF. Les pages numérisées ne
+            contiennent pas de texte et ne peuvent pas être lues.
           </p>
           {importError && <p className="mt-2 text-sm text-brick">{importError}</p>}
           {importWarning && (
