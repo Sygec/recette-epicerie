@@ -1,6 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, Recipe, Tag } from "../lib/api";
+import {
+  isRecipeSort,
+  RECIPE_SORT_KEY,
+  RECIPE_SORTS,
+  RecipeSort,
+  sortRecipes,
+} from "../lib/recipeSort";
 
 export default function RecipeList() {
   const [recipes, setRecipes] = useState<Recipe[]>([]);
@@ -10,6 +17,10 @@ export default function RecipeList() {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showTags, setShowTags] = useState(false);
+  const [sort, setSort] = useState<RecipeSort>(() => {
+    const remembered = localStorage.getItem(RECIPE_SORT_KEY);
+    return isRecipeSort(remembered) ? remembered : "recent";
+  });
 
   // Force the tag row open if a tag filter is active, even if the user
   // hasn't toggled it open — otherwise there'd be no way to see which tag
@@ -34,6 +45,13 @@ export default function RecipeList() {
     }, 200);
     return () => clearTimeout(handle);
   }, [query, activeTag, favoritesOnly]);
+
+  useEffect(() => {
+    localStorage.setItem(RECIPE_SORT_KEY, sort);
+  }, [sort]);
+
+  // Reordering is local, so changing the sort doesn't refetch.
+  const sorted = useMemo(() => sortRecipes(recipes, sort), [recipes, sort]);
 
   return (
     <div className="mx-auto max-w-2xl px-4 pb-24 pt-6 sm:pt-8">
@@ -68,6 +86,26 @@ export default function RecipeList() {
             Afficher les tags
           </button>
         )}
+
+        {/* Kept visually distinct from the filter chips beside it: this
+            changes the order, it doesn't remove anything from the list. */}
+        <label className="ml-auto flex items-center gap-1.5 text-xs text-ink/50">
+          Trier
+          <select
+            value={sort}
+            onChange={(e) => {
+              if (isRecipeSort(e.target.value)) setSort(e.target.value);
+            }}
+            className="rounded-full border border-line bg-white px-2.5 py-1 text-sm
+                       text-ink focus:border-sage focus:outline-none"
+          >
+            {RECIPE_SORTS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       {tagsVisible && tags.length > 0 && (
@@ -99,7 +137,7 @@ export default function RecipeList() {
 
       {loading ? (
         <p className="mt-10 text-center text-ink/40">Chargement…</p>
-      ) : recipes.length === 0 ? (
+      ) : sorted.length === 0 ? (
         <div className="mt-16 text-center text-ink/50">
           <p className="font-display text-xl">Aucune recette pour l'instant</p>
           <p className="mt-1 text-sm">
@@ -108,7 +146,7 @@ export default function RecipeList() {
         </div>
       ) : (
         <ul className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {recipes.map((r) => (
+          {sorted.map((r) => (
             <li key={r.id}>
               <Link
                 to={`/recettes/${r.id}`}
