@@ -92,9 +92,17 @@ every kind of change.
 
 ## Automatic deploys (Cloudflare Workers Builds)
 
-Pushes to `dev` build and deploy to staging automatically. That is configured
-in the Cloudflare dashboard, under the Worker's **Settings → Build**, and it
-needs these three values:
+There are **two** Worker projects, one per environment, each watching its own
+branch:
+
+| Cloudflare project | Production branch | Deploys to |
+| --- | --- | --- |
+| `recipe-grocery-worker-staging` | `dev` | staging |
+| `recipe-grocery-worker` | `main` | production |
+
+Both are configured in the Cloudflare dashboard under **Settings → Build**, and
+both need the same three values. They are per-project settings, so setting them
+on one does nothing for the other:
 
 | Setting | Value |
 | --- | --- |
@@ -113,6 +121,32 @@ The build command stays empty because `deploy:ci` already builds the frontend
 through its own `predeploy:ci` hook. Keeping that logic in `package.json`
 rather than in the dashboard means it is version-controlled and identical to
 what a local deploy does.
+
+### Non-production branches
+
+Each project has a *second*, separate command for pushes to any branch that
+isn't its production branch. It defaults to a bare `npx wrangler versions
+upload`, which runs from the repo root and so hits the "Missing entry-point"
+error above no matter how the settings in the table are filled in.
+
+That default is worth knowing about because of what it does to pull requests.
+A project watches every branch, not just its own, so a push to `dev` also
+starts a build on `recipe-grocery-worker` — the production project — where
+`dev` is a non-production branch. That build fails, and GitHub shows a red
+**"Workers Builds: recipe-grocery-worker"** check on the pull request, which
+reads as "production is broken" when production is fine. Two pull requests were
+merged over a red check that meant nothing before this was tracked down.
+
+**Turn non-production branch builds off on `recipe-grocery-worker`.** `dev` is
+already built by the staging project; the production project's copy of that
+build has no job other than producing a failing check. If you would rather keep
+it and have a version uploaded per pull request, set its non-production command
+to `npm run deploy:ci` as well, so it inherits the root directory and the
+pinned wrangler.
+
+Note that `versions upload` only uploads a version — it never shifts traffic.
+A failure there cannot have broken a running deployment, whatever the check
+says.
 
 ## Database migrations
 
@@ -213,3 +247,12 @@ Then open the Vite URL it prints (usually http://localhost:5173). It proxies
   `npm run deploy` instead.
 - **A Workers build fails with "Missing entry-point to Worker script"** — the
   build's root directory isn't `worker`. See the table above.
+- **A pull request into `main` shows a red "Workers Builds:
+  recipe-grocery-worker" check** — most likely the production project building
+  the *source* branch with its non-production command, not production failing.
+  Check the log: if it ran `npx wrangler versions upload` rather than
+  `npm run deploy:ci`, that is what happened. See "Non-production branches".
+- **A build check reports a failure with no duration** — Cloudflare stamps the
+  GitHub check when the build ends, so the API can show identical start and
+  end times for a build that ran for minutes. Read the build log rather than
+  the timestamps.
