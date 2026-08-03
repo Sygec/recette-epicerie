@@ -28,7 +28,12 @@ export interface ImportedRecipe {
   steps: string[];
   tags: string[];
   image_url?: string;
-  source: "json-ld" | "fallback";
+  source: "json-ld" | "fallback" | "pdf";
+  // Set when the result is thin enough that it needs checking before saving:
+  // a page with no structured data, or a document whose sections couldn't be
+  // found. The URL importer used to splice this in at the route; it belongs
+  // on the type both importers return.
+  warning?: string;
 }
 
 // Only http(s) URLs should ever be handed to a server-side fetch() here —

@@ -9,6 +9,13 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
+      workbox: {
+        // pdf.js is only pulled in when someone imports a PDF, and between the
+        // library and its worker it dwarfs the rest of the app. Precaching it
+        // would make every install pay for a feature most visits never touch,
+        // so it stays a network fetch at the moment it's needed.
+        globIgnores: ["**/pdf-*.js", "**/pdf.worker*.mjs"],
+      },
       manifest: {
         name: "Recettes & Courses",
         short_name: "Recettes",

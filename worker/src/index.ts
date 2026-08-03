@@ -9,6 +9,7 @@ import {
   mapFallbackToRecipe,
   mapJsonLdToRecipe,
 } from "./recipeImport";
+import { parseRecipeText } from "./recipeText";
 import {
   findMergeTarget,
   loadAliasRows,
@@ -324,6 +325,36 @@ app.post("/api/recipes/import", async (c) => {
     { error: "Impossible d'extraire une recette de cette page. Essayez la saisie manuelle." },
     422
   );
+});
+
+// A PDF carries no structured data, so unlike the URL importer above there is
+// nothing to read — the text has to be interpreted. Extraction happens in the
+// browser (see frontend/src/lib/pdfText.ts), which keeps PDF machinery out of
+// the Worker bundle and out of local development; this route only interprets
+// the text it is handed. Nothing is stored.
+//
+// It takes text rather than a file on purpose: the parsing below is the part
+// worth having on the server, and it doesn't care where the text came from.
+const MAX_IMPORT_TEXT_LENGTH = 200_000;
+
+app.post("/api/recipes/import-text", async (c) => {
+  const body = await c.req.json<{ text?: string }>();
+  const text = typeof body.text === "string" ? body.text : "";
+
+  if (!text.trim()) {
+    return c.json(
+      {
+        error:
+          "Aucun texte n'a pu être extrait de ce document. S'il s'agit de pages numérisées, la saisie manuelle est nécessaire.",
+      },
+      422
+    );
+  }
+  if (text.length > MAX_IMPORT_TEXT_LENGTH) {
+    return c.json({ error: "Ce document est trop volumineux" }, 413);
+  }
+
+  return c.json(parseRecipeText(text));
 });
 
 app.put("/api/recipes/:id", async (c) => {
