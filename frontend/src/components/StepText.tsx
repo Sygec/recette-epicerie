@@ -1,0 +1,167 @@
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { segmentStep } from "../lib/ingredientMatch";
+
+export interface StepIngredient {
+  id: string | number;
+  name: string;
+  /** Already scaled to the chosen servings, so the tooltip agrees with the
+   *  ingredient list above it. */
+  quantity: number | null;
+  unit: string | null;
+}
+
+interface Props {
+  stepId: number;
+  text: string;
+  ingredients: StepIngredient[];
+  /** Which mention is showing its tooltip, shared across every step so only
+   *  one is ever open. */
+  openKey: string | null;
+  onOpenChange: (key: string | null) => void;
+}
+
+function amountLabel(ing: StepIngredient): string {
+  const amount = [ing.quantity ?? "", ing.unit ?? ""].join(" ").trim();
+  return amount || "Quantité non précisée";
+}
+
+
+// Centred over the word it belongs to, which puts it off-screen for a mention
+// near either edge of the paragraph. Rather than reach for a positioning
+// library, measure once after mounting and nudge it back inside the viewport.
+// Mounted fresh per mention, so the offset always starts from zero.
+function MentionTooltip({
+  id,
+  candidates,
+}: {
+  id: string;
+  candidates: StepIngredient[];
+}) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [shift, setShift] = useState(0);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    // clientWidth, not innerWidth: it excludes any scrollbar, and under
+    // mobile emulation innerWidth reports the layout viewport, which is not
+    // what the tooltip is visually clipped against.
+    const viewportWidth = document.documentElement.clientWidth;
+    const margin = 8;
+    let dx = 0;
+    if (rect.left < margin) dx = margin - rect.left;
+    else if (rect.right > viewportWidth - margin) {
+      dx = viewportWidth - margin - rect.right;
+    }
+    // Only ever one correction: the shift moves the box without resizing it,
+    // so a single pass is enough and this can't oscillate.
+    if (dx !== 0) setShift(dx);
+  }, []);
+
+  return (
+    <span
+      ref={ref}
+      role="tooltip"
+      id={id}
+      style={{ transform: `translateX(calc(-50% + ${shift}px))` }}
+      className="absolute bottom-full left-1/2 z-30 mb-1 w-max max-w-[min(16rem,80vw)]
+                 rounded-card border border-line bg-white px-2 py-1 text-left
+                 text-xs font-normal leading-snug text-ink shadow-lg shadow-ink/10"
+    >
+      {candidates.map((ing, i) => (
+        <span key={i} className={i > 0 ? "mt-1 block border-t border-line pt-1" : "block"}>
+          <span className="block font-mono font-medium text-sage-dark">
+            {amountLabel(ing)}
+          </span>
+          <span className="block text-ink/60">{ing.name}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+// Renders a step with its ingredient mentions highlighted; each one shows the
+// quantity from the ingredient list on hover (mouse) or tap (touch).
+export default function StepText({
+  stepId,
+  text,
+  ingredients,
+  openKey,
+  onOpenChange,
+}: Props) {
+  const segments = useMemo(() => segmentStep(text, ingredients), [text, ingredients]);
+  const byId = useMemo(() => new Map(ingredients.map((i) => [i.id, i])), [ingredients]);
+
+  // A tap fires pointerenter before click on touch, so opening on hover and
+  // toggling on click would open then immediately close. Remember how the
+  // interaction started and let only one of the two act.
+  const lastPointerType = useRef<string>("mouse");
+
+  useEffect(() => {
+    if (openKey == null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onOpenChange(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [openKey, onOpenChange]);
+
+  return (
+    <p className="text-sm leading-relaxed">
+      {segments.map((segment, index) => {
+        const candidates = (segment.ingredientIds ?? [])
+          .map((id) => byId.get(id))
+          .filter((ing): ing is StepIngredient => ing != null);
+        if (!candidates.length) return <span key={index}>{segment.text}</span>;
+
+        const key = `${stepId}:${index}`;
+        const isOpen = openKey === key;
+
+        return (
+          <span key={index} className="relative inline-block">
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                lastPointerType.current = e.pointerType;
+              }}
+              onPointerEnter={(e) => {
+                if (e.pointerType === "mouse") onOpenChange(key);
+              }}
+              onPointerLeave={(e) => {
+                if (e.pointerType === "mouse") onOpenChange(null);
+              }}
+              onClick={() => {
+                // Mouse users already got it on hover; acting again here
+                // would just close what they are looking at.
+                if (lastPointerType.current !== "mouse") {
+                  onOpenChange(isOpen ? null : key);
+                }
+              }}
+              // Keyboard focus should reveal the tooltip, but a tap also
+              // focuses the button — and focus fires before click, so opening
+              // here unconditionally made the click handler toggle it right
+              // back shut. :focus-visible is false for pointer-driven focus,
+              // which is exactly the distinction needed.
+              onFocus={(e) => {
+                if (e.currentTarget.matches(":focus-visible")) onOpenChange(key);
+              }}
+              onBlur={() => onOpenChange(null)}
+              aria-describedby={isOpen ? `tip-${key}` : undefined}
+              aria-label={`${segment.text} — ${candidates
+                .map((ing) => `${amountLabel(ing)} ${ing.name}`)
+                .join(" ; ")}`}
+              className="rounded bg-mustard/25 px-0.5 font-medium decoration-mustard-dark/60 decoration-dotted underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sage"
+            >
+              {segment.text}
+            </button>
+
+            {isOpen && (
+              <MentionTooltip id={`tip-${key}`} candidates={candidates} />
+            )}
+          </span>
+        );
+      })}
+    </p>
+  );
+}
