@@ -352,6 +352,8 @@ export interface ImportedRecipe {
   steps: string[];
   tags: string[];
   image_url?: string;
+  // Set by the PDF importer when the document prints its own address.
+  source_url?: string;
   source: "json-ld" | "fallback" | "pdf";
   warning?: string;
 }

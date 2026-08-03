@@ -77,7 +77,22 @@ function isNoise(line: string): boolean {
   if (/^\d{1,3}$/.test(line)) return true; // page number
   if (/^[-—_=|\s]+$/.test(line)) return true; // horizontal rule / empty table row
   if (/^page\s+\d+/i.test(line)) return true;
+  // A line that is nothing but a link is the printed source, captured
+  // separately as source_url; left in place it reads as a long enough line to
+  // pass for a step.
+  if (/^<?https?:\/\/\S+>?$/i.test(line)) return true;
   return false;
+}
+
+/**
+ * The source URL a printed recipe carries in its header. Saving a page as a
+ * PDF is how most of these documents are made, and the print stylesheet
+ * usually stamps the address on it — so the recipe's provenance is right
+ * there in the text rather than something to invent.
+ */
+function findSourceUrl(text: string): string | undefined {
+  const m = text.match(/https?:\/\/[^\s<>"')\]]+/i);
+  return m ? m[0].replace(/[.,;:]+$/, "") : undefined;
 }
 
 /**
@@ -114,6 +129,7 @@ const MINUTES_PER_UNIT: Record<string, number> = {
   heures: 60,
   hour: 60,
   hours: 60,
+  m: 1,
   min: 1,
   mins: 1,
   minute: 1,
@@ -123,8 +139,12 @@ const MINUTES_PER_UNIT: Record<string, number> = {
 /** "1 h 15", "20 minutes", "1 hour 30 mins" -> minutes. */
 function parseDuration(text: string): number | undefined {
   // "1 h 30" leaves the minutes bare, so the general number+unit scan below
-  // would read only the hour.
-  const hoursThenBare = text.match(/(\d+)\s*(?:h|hrs?|heures?|hours?)\s*(\d{1,2})(?!\s*\p{L})/u);
+  // would read only the hour. The minutes must run to the end of the number
+  // and carry no unit of their own: without the digit guard, "1 hour 30 mins"
+  // matched here by taking the "3" of "30" and read as 63 minutes.
+  const hoursThenBare = text.match(
+    /(\d+)\s*(?:h|hrs?|heures?|hours?)\s*(\d{1,2})(?!\d)(?!\s*\p{L})/u
+  );
   if (hoursThenBare) {
     return Number(hoursThenBare[1]) * 60 + Number(hoursThenBare[2]);
   }
@@ -177,9 +197,35 @@ function findLabels(line: string): LabelHit[] {
   return hits.sort((a, b) => a.start - b.start);
 }
 
+/** Pulls one metadata value out of the text a label lays claim to. */
+function readValue(key: keyof Metadata, segment: string): number | undefined {
+  if (key === "servings") {
+    const m = segment.match(/\d+/);
+    return m ? Number(m[0]) : undefined;
+  }
+  return parseDuration(segment);
+}
+
+/**
+ * A label's value can sit on the line below it rather than beside it — a
+ * two-column header band ("Cook Time" / "1h 30m") extracts that way, as does
+ * anything printed as a table. Only a short line carrying a digit qualifies,
+ * so a bare "Préparation" heading can't read its first step as a time.
+ *
+ * A value may restate its own label ("4 servings"), so what disqualifies a
+ * line is a label standing *before* the number — that makes it a metadata row
+ * in its own right ("Cuisson : 25 min"), not the line above's value.
+ */
+function looksLikeValue(line: string): boolean {
+  const firstDigit = line.search(/\d/);
+  if (line.length > 25 || firstDigit === -1) return false;
+  return !findLabels(line).some((hit) => hit.start < firstDigit);
+}
+
 function extractMetadata(lines: string[]): Metadata {
   const meta: Metadata = {};
-  for (const line of lines) {
+  for (let l = 0; l < lines.length; l++) {
+    const line = lines[l];
     const labels = findLabels(line);
     for (let i = 0; i < labels.length; i++) {
       const label = labels[i];
@@ -187,16 +233,30 @@ function extractMetadata(lines: string[]): Metadata {
       // Only as far as the next label, so one label can't swallow another's
       // value.
       const segment = line.slice(label.end, labels[i + 1]?.start ?? line.length);
-      if (label.key === "servings") {
-        const m = segment.match(/\d+/);
-        if (m) meta.servings = Number(m[0]);
-      } else {
-        const minutes = parseDuration(segment);
-        if (minutes !== undefined) meta[label.key] = minutes;
+      let value = readValue(label.key, segment);
+      // Nothing beside it: the value may be on the next line, but only if this
+      // is the last label on this one — otherwise it belongs to a later label.
+      if (value === undefined && i === labels.length - 1) {
+        const next = lines[l + 1];
+        if (next && looksLikeValue(stripMarkdown(next))) {
+          value = readValue(label.key, stripMarkdown(next));
+        }
       }
+      if (value !== undefined) meta[label.key] = value;
     }
   }
   return meta;
+}
+
+/**
+ * A label dividing the ingredient list into groups — "Pour la garniture :",
+ * "For the Rice:". There is nowhere to put one: ingredients are a flat list
+ * with no sections, so kept as an ingredient it becomes a quantity-less row
+ * that follows the recipe onto a grocery list. A trailing colon with no
+ * quantity in front of it is the signal; "Sel et poivre" has neither.
+ */
+function isGroupHeading(line: string): boolean {
+  return /[:：]$/.test(line) && !/^\d|^[½⅓⅔¼¾⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞]/.test(line);
 }
 
 /** An ingredient-looking line: short, and led by a quantity or a bullet. */
@@ -205,6 +265,11 @@ function looksLikeIngredient(raw: string, stripped: string): boolean {
   if (/^\s*[-*+•]\s+/.test(raw)) return true;
   return /^\d|^[½⅓⅔¼¾⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞]/.test(stripped);
 }
+
+// Terminal punctuation, allowing for a bracket or quote closed after it: a
+// step ending "(Alternatively, use a rice cooker.)" is finished, and reading
+// the ")" as mid-sentence swallowed every step that followed into it.
+const SENTENCE_END = /[.!?:]["'»”’)\]]?$/;
 
 /**
  * Rejoins lines the document wrapped mid-sentence. A step continues onto the
@@ -216,7 +281,7 @@ function joinWrappedSteps(lines: string[]): string[] {
   for (const line of lines) {
     const startsNew = /^\s*(?:\d+[.)]|étape\s+\d+|step\s+\d+)/i.test(line);
     const previous = steps[steps.length - 1];
-    if (!startsNew && previous && !/[.!?:]$/.test(previous)) {
+    if (!startsNew && previous && !SENTENCE_END.test(previous)) {
       steps[steps.length - 1] = `${previous} ${stripMarkdown(line)}`.trim();
       continue;
     }
@@ -284,7 +349,9 @@ export function parseRecipeText(text: string): ParsedRecipeText {
 
   const ingredients: ImportedIngredient[] = ingredientLines
     .map((line) => stripMarkdown(line))
-    .filter((line) => line && !isNoise(line) && headingKind(line) === null)
+    .filter(
+      (line) => line && !isNoise(line) && headingKind(line) === null && !isGroupHeading(line)
+    )
     .map((line) => splitIngredientLine(line));
 
   const steps = joinWrappedSteps(stepLines).filter((step) => step.length > 2);
@@ -312,6 +379,7 @@ export function parseRecipeText(text: string): ParsedRecipeText {
 
   return {
     title,
+    source_url: findSourceUrl(text),
     servings: meta.servings,
     prep_time: meta.prep_time,
     cook_time: meta.cook_time,

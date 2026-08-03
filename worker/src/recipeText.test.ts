@@ -245,6 +245,79 @@ Préparation
     expect(recipe.cook_time).toBe(90);
   });
 
+  // The bare-minutes shortcut used to fire here too, taking the "3" of "30"
+  // and reading 1 hour 3 minutes.
+  it("reads hours and minutes when both carry a unit", () => {
+    expect(parseRecipeText("Cuisson : 1 hour 30 mins\n").cook_time).toBe(90);
+    expect(parseRecipeText("Cuisson : 1h 30m\n").cook_time).toBe(90);
+  });
+
+  // A recipe printed from a website lays its header out as a table, so each
+  // value lands on the line below its label rather than beside it.
+  const printedFromWeb = `Poke Bowl
+URL
+https://cooking.nytimes.com/recipes/1024634-poke-bowl
+Preperation Time
+15m
+Cook Time
+1h 30m
+Total Time
+1h 45m
+Servings
+4 servings
+Ingredients
+For the Poke:
+1/4 cup soy sauce, plus more as needed
+Crushed red pepper, to taste (optional)
+For the Rice:
+1 1/2 cups sushi or Calrose rice
+Steps
+Prepare the rice: rinse it until the water runs clear, cook it and let stand,
+covered, for 10 minutes. (Alternatively, use a rice cooker.)
+Set up a poke bowl bar with the poke, rice and toppings of choice.
+`;
+
+  it("reads a header band whose values sit under their labels", () => {
+    const recipe = parseRecipeText(printedFromWeb);
+    expect(recipe.title).toBe("Poke Bowl");
+    expect(recipe.servings).toBe(4);
+    expect(recipe.prep_time).toBe(15);
+    expect(recipe.cook_time).toBe(90);
+  });
+
+  // "Total Time" sits between "Cook Time" and its own value in this layout;
+  // reading past the first value would give cook_time the total.
+  it("does not let a later label claim an earlier one's value", () => {
+    expect(parseRecipeText(printedFromWeb).cook_time).not.toBe(105);
+  });
+
+  it("keeps the source URL the document prints", () => {
+    expect(parseRecipeText(printedFromWeb).source_url).toBe(
+      "https://cooking.nytimes.com/recipes/1024634-poke-bowl"
+    );
+  });
+
+  // Ingredients are a flat list, so a group label kept as an ingredient turns
+  // into a quantity-less row that follows the recipe onto a grocery list.
+  it("drops the labels that divide an ingredient list into groups", () => {
+    const names = parseRecipeText(printedFromWeb).ingredients.map((i) => i.name);
+    expect(names).toEqual([
+      "soy sauce, plus more as needed",
+      "Crushed red pepper, to taste (optional)",
+      "sushi or Calrose rice",
+    ]);
+  });
+
+  // A step ending "...rice cooker.)" reads as unfinished unless the closing
+  // bracket is allowed after the full stop — and every step after it was
+  // being appended to it.
+  it("ends a step that closes a bracket after its full stop", () => {
+    const steps = parseRecipeText(printedFromWeb).steps;
+    expect(steps).toHaveLength(2);
+    expect(steps[0]).toMatch(/rice cooker\.\)$/);
+    expect(steps[1]).toBe("Set up a poke bowl bar with the poke, rice and toppings of choice.");
+  });
+
   it("survives empty input", () => {
     const recipe = parseRecipeText("");
     expect(recipe.title).toBe("Recette importée");

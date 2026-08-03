@@ -86,6 +86,9 @@ export default function RecipeForm() {
         : [{ name: "", quantity: "", unit: "" }]
     );
     setSteps(imported.steps.length ? imported.steps : [""]);
+    // Only the PDF importer reports one, and the URL path overwrites it with
+    // the address that was actually fetched.
+    setSourceUrl(imported.source_url ?? "");
     setImportedImageUrl(imported.image_url ?? null);
     setImportWarning(imported.warning ?? null);
   }
@@ -109,9 +112,8 @@ export default function RecipeForm() {
   }
 
   // The PDF is read here rather than uploaded: extraction happens in the
-  // browser and only the text is sent. A PDF has no source URL and no image,
-  // so unlike the URL path nothing extra is set — applyImported clears the
-  // image already.
+  // browser and only the text is sent. Nothing extra is set afterwards — a PDF
+  // has no image, and any source URL it prints comes back in the parse.
   async function handleImportPdf(file: File) {
     setImporting(true);
     setImportError(null);
