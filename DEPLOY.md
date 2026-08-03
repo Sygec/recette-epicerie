@@ -150,23 +150,38 @@ project's production branch. It is marked optional, but optional means "fall
 back to the default" — `npx wrangler versions upload` — not "do nothing".
 Clearing the field does not switch the build off.
 
-That default carries no `cd worker`, so under the Path `/` layout it runs
-wrangler from the repo root and fails with "Missing entry-point", while the
-deploy command beside it succeeds. On `recipe-grocery-worker` it must be:
+**"Non-production branch" is relative to the project, and each project treats
+the other's branch as one.** This is the piece neither settings page tells you,
+because each shows only its own production branch. A project builds *every*
+branch, so one push starts a build on both, and each picks a different command:
+
+| Push to... | `recipe-grocery-worker-staging` runs | `recipe-grocery-worker` runs |
+| --- | --- | --- |
+| `dev` | its deploy command *(production branch)* | its non-production command |
+| `main` | its non-production command | its deploy command *(production branch)* |
+
+So `main` is a non-production branch as far as staging is concerned, exactly as
+`dev` is to production.
+
+Whether that second build fails depends on nothing but the project's Path.
+Under Path `worker` the bare default already runs in the right directory and
+succeeds; under Path `/` it runs at the repo root, finds no `wrangler.toml`,
+and fails with "Missing entry-point". Identical command, opposite outcome —
+which is why this bit `recipe-grocery-worker` and may never have touched
+staging.
+
+That is what happened here. Every push to `dev` failed a build on the
+*production* project, and GitHub showed a red **"Workers Builds:
+recipe-grocery-worker"** check on the pull request, which reads as "production
+is broken" while production was perfectly fine. Two pull requests were merged
+over that check before anyone opened the log. To fix the command rather than
+the build, give it the same `cd worker` the deploy command already has:
 
 ```
 cd worker && npm install && npx wrangler versions upload
 ```
 
-This matters because a project builds every branch, not only its own. A push to
-`dev` therefore starts a build on `recipe-grocery-worker` — the *production*
-project — where `dev` counts as non-production. With the bare default that
-build fails, and GitHub shows a red **"Workers Builds: recipe-grocery-worker"**
-check on the pull request, which reads as "production is broken" while
-production is perfectly fine. Two pull requests were merged over that check
-before anyone opened the log.
-
-Two things make it easy to misread, both worth remembering:
+Two things make this failure easy to misread, both worth remembering:
 
 - `versions upload` only uploads a version — it never shifts traffic. A failure
   there cannot have broken a running deployment, whatever the check says.
@@ -175,9 +190,14 @@ Two things make it easy to misread, both worth remembering:
   like a build that was skipped and never ran. Read the log, not the
   timestamps.
 
-To stop the production project building `dev` at all, the setting is **Settings
-→ Build → Branch control**, not this dialog. Fixing the command is usually
-better: the check goes green and each pull request gets a real version upload.
+Fixing the command is not the only option, and probably not the best one. Even
+when the build succeeds it uploads a version built from the *other*
+environment's branch — harmless, since traffic never moves, but it leaves each
+Worker's version list mixed and confusing to read later. Turning non-production
+branch builds off on **both** projects, under **Settings → Build → Branch
+control**, is the tidy answer: each project then builds only its own branch,
+and pull requests stop carrying a check about the environment they are not
+touching.
 
 ## Database migrations
 
@@ -276,8 +296,9 @@ Then open the Vite URL it prints (usually http://localhost:5173). It proxies
 - **`wrangler deploy` complains it can't find `../frontend/dist`** — you ran
   `npx wrangler deploy` directly, which skips the build hook. Use
   `npm run deploy` instead.
-- **A Workers build fails with "Missing entry-point to Worker script"** — the
-  build's root directory isn't `worker`. See the table above.
+- **A Workers build fails with "Missing entry-point to Worker script"** — that
+  command isn't running in `worker/`. Either the Path setting or a `cd worker`
+  in front of it has to put it there. See the tables above.
 - **A pull request into `main` shows a red "Workers Builds:
   recipe-grocery-worker" check** — most likely the production project building
   the *source* branch with its non-production command, not production failing.
