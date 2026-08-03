@@ -134,8 +134,8 @@ what a local deploy does.
 
 Here the build command builds the frontend, so `wrangler deploy` finds
 `../frontend/dist` already waiting. Every command that touches wrangler needs
-its own `cd worker` — including the non-production one below, which is where
-this bit us.
+its own `cd worker` — the one described below didn't, which is where this bit
+us.
 
 A quick way to spot a command running from the wrong directory: if the build
 log shows npm *installing* wrangler (`npm warn exec ... will be installed`)
@@ -144,16 +144,23 @@ rather than using the version pinned in `worker/package.json`, it is not in
 
 ### Non-production branches
 
-Each project has a *third* field, **Non-production branch deploy command**, run
-instead of the deploy command for pushes to any branch that isn't that
-project's production branch. It is marked optional, but optional means "fall
-back to the default" — `npx wrangler versions upload` — not "do nothing".
-Clearing the field does not switch the build off.
+**Both projects have non-production branch builds turned off**, under
+**Settings → Build → Branch control**. Each therefore builds only its own
+branch: a push to `dev` builds staging and nothing else, a push to `main`
+builds production and nothing else. One push, one build, one check.
+
+It is worth knowing why, because the default is the opposite and turning it
+back on has a sharp edge.
+
+Left on, a project builds *every* branch, not only its own. For a branch that
+isn't its production branch it runs a separate field, **Non-production branch
+deploy command**, instead of the deploy command. That field is marked optional,
+but optional means "fall back to the default" — a bare `npx wrangler versions
+upload` — not "do nothing", so clearing it switches nothing off.
 
 **"Non-production branch" is relative to the project, and each project treats
-the other's branch as one.** This is the piece neither settings page tells you,
-because each shows only its own production branch. A project builds *every*
-branch, so one push starts a build on both, and each picks a different command:
+the other's branch as one.** Neither settings page tells you this, because each
+shows only its own production branch:
 
 | Push to... | `recipe-grocery-worker-staging` runs | `recipe-grocery-worker` runs |
 | --- | --- | --- |
@@ -163,25 +170,21 @@ branch, so one push starts a build on both, and each picks a different command:
 So `main` is a non-production branch as far as staging is concerned, exactly as
 `dev` is to production.
 
-Whether that second build fails depends on nothing but the project's Path.
-Under Path `worker` the bare default already runs in the right directory and
-succeeds; under Path `/` it runs at the repo root, finds no `wrangler.toml`,
-and fails with "Missing entry-point". Identical command, opposite outcome —
-which is why this bit `recipe-grocery-worker` and may never have touched
-staging.
+That is what bit this repo. Every push to `dev` also started a build on the
+*production* project, where the bare default ran wrangler from the repo root —
+no `cd worker`, no `wrangler.toml` — and failed with "Missing entry-point".
+GitHub showed a red **"Workers Builds: recipe-grocery-worker"** check on the
+pull request, which reads as "production is broken" while production was
+perfectly fine. Two pull requests were merged over that check before anyone
+opened the log.
 
-That is what happened here. Every push to `dev` failed a build on the
-*production* project, and GitHub showed a red **"Workers Builds:
-recipe-grocery-worker"** check on the pull request, which reads as "production
-is broken" while production was perfectly fine. Two pull requests were merged
-over that check before anyone opened the log. To fix the command rather than
-the build, give it the same `cd worker` the deploy command already has:
+Whether it fails at all depends on nothing but the project's Path. Under Path
+`worker` the bare default already runs in the right directory and succeeds;
+under Path `/` it doesn't. Identical command, opposite outcome — which is why
+this hit production and may never have touched staging.
 
-```
-cd worker && npm install && npx wrangler versions upload
-```
-
-Two things make this failure easy to misread, both worth remembering:
+Two things make that failure easy to misread, worth remembering if it ever
+comes back:
 
 - `versions upload` only uploads a version — it never shifts traffic. A failure
   there cannot have broken a running deployment, whatever the check says.
@@ -190,14 +193,18 @@ Two things make this failure easy to misread, both worth remembering:
   like a build that was skipped and never ran. Read the log, not the
   timestamps.
 
-Fixing the command is not the only option, and probably not the best one. Even
-when the build succeeds it uploads a version built from the *other*
-environment's branch — harmless, since traffic never moves, but it leaves each
-Worker's version list mixed and confusing to read later. Turning non-production
-branch builds off on **both** projects, under **Settings → Build → Branch
-control**, is the tidy answer: each project then builds only its own branch,
-and pull requests stop carrying a check about the environment they are not
-touching.
+If you do want these builds back — for a version uploaded per pull request —
+give the non-production command the same `cd worker` the deploy command beside
+it already has:
+
+```
+cd worker && npm install && npx wrangler versions upload
+```
+
+Note that even when it succeeds it uploads a version built from the *other*
+environment's branch. Nothing breaks, since traffic never moves, but each
+Worker's version list ends up mixed and harder to read later. That is the
+reason both projects have it off.
 
 ## Database migrations
 
@@ -300,10 +307,11 @@ Then open the Vite URL it prints (usually http://localhost:5173). It proxies
   command isn't running in `worker/`. Either the Path setting or a `cd worker`
   in front of it has to put it there. See the tables above.
 - **A pull request into `main` shows a red "Workers Builds:
-  recipe-grocery-worker" check** — most likely the production project building
-  the *source* branch with its non-production command, not production failing.
-  Check the log: if the deploy step ran wrangler without a `cd worker` in front
-  of it, that is what happened. See "Non-production branches".
+  recipe-grocery-worker" check** — non-production branch builds have been
+  switched back on for that project. It is building the *source* branch with
+  its non-production command, not production failing. Check the log: if the
+  deploy step ran wrangler without a `cd worker` in front of it, that is what
+  happened. See "Non-production branches".
 - **A build check reports a failure with no duration** — Cloudflare stamps the
   GitHub check when the build ends, so the API can show identical start and
   end times for a build that ran for minutes. Read the build log rather than
