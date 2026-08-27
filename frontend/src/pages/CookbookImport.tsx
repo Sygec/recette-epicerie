@@ -15,6 +15,14 @@ const FRONT_MATTER_PAGES = 40;
 // Enough of each page to recognise a recipe title, and little enough that a
 // 400-page book is a small request rather than megabytes of prose.
 const HEADING_LINES = 3;
+// Measured, not guessed: two real pages of a real cookbook came to $0.029 and
+// $0.047 with Claude Sonnet 5 — a dense page costs more than a sparse one, and
+// the structured-output schema is itself most of the input. Rounded up, so the
+// figure quoted before spending is not one the invoice contradicts.
+const COST_PER_PAGE_USD = 0.04;
+// Those same pages took 17 s and 30 s. The loop is sequential on purpose, so a
+// whole book is a walk away, not a spinner to sit through.
+const SECONDS_PER_PAGE = 25;
 
 type Phase = "idle" | "reading" | "parsing" | "done" | "error" | "importing";
 
@@ -429,8 +437,9 @@ export default function CookbookImport() {
                   {selected.size > 0 && phase !== "importing" && (
                     <p className="mt-1.5 text-xs text-ink/50">
                       {selectedPages} page{selectedPages > 1 ? "s" : ""} à analyser,
-                      soit environ {(selectedPages * 0.017).toFixed(2)} $ US d'appels
-                      à l'IA. Les recettes déjà importées ne sont jamais refacturées.
+                      soit environ {(selectedPages * COST_PER_PAGE_USD).toFixed(2)} $ US
+                      et {Math.ceil((selectedPages * SECONDS_PER_PAGE) / 60)} min.
+                      Les recettes déjà importées ne sont jamais refacturées.
                     </p>
                   )}
 
