@@ -23,6 +23,9 @@ const COST_PER_PAGE_USD = 0.04;
 // Those same pages took 17 s and 30 s. The loop is sequential on purpose, so a
 // whole book is a walk away, not a spinner to sit through.
 const SECONDS_PER_PAGE = 25;
+// How many pages one recipe may claim. Generous enough for a recipe that runs
+// over a photo spread, small enough that a wrong end_page can't send a chapter.
+const MAX_SPAN_PAGES = 4;
 
 type Phase = "idle" | "reading" | "parsing" | "done" | "error" | "importing";
 
@@ -179,6 +182,25 @@ export default function CookbookImport() {
     const pages = [...new Set(wanted.map((e) => e.page_number!))].sort((a, b) => a - b);
     if (!pages.length) return;
 
+    // A recipe rarely stops at the bottom of the page it starts on: the one
+    // this was found with runs 149-151, where 150 is a full-page photograph
+    // and 151 opens mid-sentence. Sending only the starting page cost 58% of
+    // the method, and the model dutifully compressed what was left into a
+    // single step. So send the whole span the index recorded.
+    const spanFor = (start: number) => {
+      const ends = entries
+        .filter((e) => e.page_number === start)
+        .map((e) => e.end_page ?? start);
+      // Capped: a bad end_page shouldn't send half the book as one request.
+      const end = Math.min(Math.max(start, ...ends), start + MAX_SPAN_PAGES - 1);
+      const parts: string[] = [];
+      for (let p = start; p <= end; p++) {
+        const t = pageText.get(p);
+        if (t && t.trim()) parts.push(t);
+      }
+      return parts.join("\n\n");
+    };
+
     const controller = new AbortController();
     abort.current = controller;
     setPhase("importing");
@@ -194,7 +216,7 @@ export default function CookbookImport() {
 
     for (const page of pages) {
       if (controller.signal.aborted) break;
-      const text = pageText.get(page);
+      const text = spanFor(page);
       if (!text) {
         running.failures.push(`p.${page} : texte introuvable`);
         running.pagesDone++;

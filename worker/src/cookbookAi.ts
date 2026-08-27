@@ -94,6 +94,14 @@ Règles :
   photos et le texte d'introduction qui n'appartient à aucune recette.
 - Une ligne qui énumère les composants d'un plat ("riz + poulet + avocat")
   est une description, pas une étape.
+- Certains livres donnent d'abord un sommaire des opérations ("1. Cuire
+  l'agneau, 2. Cuire l'aubergine…") avant les instructions détaillées, souvent
+  regroupées par composant ("POUR L'AGNEAU : …"). Les étapes de la recette sont
+  les instructions détaillées, pas le sommaire : ignore ce dernier.
+- Découpe la méthode en étapes réelles — une action par étape. Ne rends jamais
+  toute la méthode en un seul bloc.
+- Le texte peut couvrir plusieurs pages : une page peut commencer au milieu
+  d'une phrase, ou être une photo sans texte. Recolle la suite.
 - Si la page ne contient aucune recette complète, rends une liste vide.`;
 
 /**
