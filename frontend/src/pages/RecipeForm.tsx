@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { api, ImportedRecipe } from "../lib/api";
+import { api, Cookbook, ImportedRecipe } from "../lib/api";
 
 interface IngredientRow {
   name: string;
@@ -21,6 +21,13 @@ export default function RecipeForm() {
   const [difficulty, setDifficulty] = useState("");
   const [sourceUrl, setSourceUrl] = useState("");
   const [notes, setNotes] = useState("");
+  // Which book this recipe comes from. Mostly set by the cookbook importer,
+  // but offered here so a recipe typed out of a paper cookbook can be filed
+  // under it — otherwise a book with no file would be a shelf you can't put
+  // anything on.
+  const [cookbookId, setCookbookId] = useState("");
+  const [cookbookPage, setCookbookPage] = useState("");
+  const [cookbooks, setCookbooks] = useState<Cookbook[]>([]);
   const [tagsInput, setTagsInput] = useState("");
   const [ingredients, setIngredients] = useState<IngredientRow[]>([
     { name: "", quantity: "", unit: "" },
@@ -33,6 +40,12 @@ export default function RecipeForm() {
   const [existingPhotoUrl, setExistingPhotoUrl] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Empty shelf is the normal case for most people, so failure here is
+    // silent: it just means the selector has nothing to offer.
+    api.getCookbooks().then(setCookbooks).catch(() => {});
+  }, []);
 
   const [importUrl, setImportUrl] = useState("");
   const [importing, setImporting] = useState(false);
@@ -52,6 +65,8 @@ export default function RecipeForm() {
       setDifficulty(r.difficulty ?? "");
       setSourceUrl(r.source_url ?? "");
       setNotes(r.notes ?? "");
+      setCookbookId(r.cookbook_id?.toString() ?? "");
+      setCookbookPage(r.cookbook_page?.toString() ?? "");
       setTagsInput(r.tags.map((t) => t.name).join(", "));
       setIngredients(
         r.ingredients.length
@@ -177,6 +192,11 @@ export default function RecipeForm() {
         difficulty: difficulty || undefined,
         source_url: sourceUrl || undefined,
         notes: notes || undefined,
+        // Sent explicitly rather than omitted: the server treats an absent
+        // key as "leave alone", so omitting them would make clearing the
+        // selector do nothing.
+        cookbook_id: cookbookId ? Number(cookbookId) : null,
+        cookbook_page: cookbookId && cookbookPage ? Number(cookbookPage) : null,
         ingredients: ingredients
           .filter((i) => i.name.trim())
           .map((i) => ({
@@ -473,6 +493,39 @@ export default function RecipeForm() {
           className={inputClass}
         />
       </label>
+
+      {/* Only shown once there's a shelf to file into — an empty selector is
+          just a question nobody can answer. */}
+      {cookbooks.length > 0 && (
+        <div className="mt-4 flex gap-3">
+          <label className={`${labelClass} flex-1`}>
+            Livre
+            <select
+              value={cookbookId}
+              onChange={(e) => setCookbookId(e.target.value)}
+              className={inputClass}
+            >
+              <option value="">Aucun</option>
+              {cookbooks.map((book) => (
+                <option key={book.id} value={book.id}>
+                  {book.title}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className={`${labelClass} w-24`}>
+            Page
+            <input
+              type="number"
+              inputMode="numeric"
+              value={cookbookPage}
+              onChange={(e) => setCookbookPage(e.target.value)}
+              disabled={!cookbookId}
+              className={`${inputClass} disabled:opacity-50`}
+            />
+          </label>
+        </div>
+      )}
 
       <button
         type="submit"

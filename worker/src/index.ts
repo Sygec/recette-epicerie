@@ -10,6 +10,13 @@ import {
   mapJsonLdToRecipe,
 } from "./recipeImport";
 import { parseRecipeText } from "./recipeText";
+import cookbooks from "./cookbooks";
+import {
+  ALLOWED_PHOTO_TYPES,
+  deleteStaleObjects,
+  isUploadedFile,
+  PHOTO_TYPE_ERROR,
+} from "./photos";
 import {
   findMergeTarget,
   loadAliasRows,
@@ -37,19 +44,6 @@ app.onError((err, c) => {
     500
   );
 });
-
-// Recipe photos are stored in R2 and later re-served with this same
-// Content-Type, on the same origin as the app (see the ASSETS catch-all
-// below). Without an allowlist, an uploaded file claiming to be text/html or
-// image/svg+xml could execute as a same-origin page when its /photos/* URL
-// is opened directly — a stored-XSS path to the session token in
-// localStorage. Only accept real raster image types.
-const ALLOWED_PHOTO_TYPES = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-  "image/gif",
-]);
 
 // ---------------------------------------------------------------------------
 // Auth — shared login (one account, session token)
@@ -82,6 +76,13 @@ app.post("/api/auth/logout", requireAuth, async (c) => {
 app.use("/api/*", requireAuth);
 
 // ---------------------------------------------------------------------------
+// Cookbooks — the catalogue of books the user owns (worker/src/cookbooks.ts).
+// Mounted here, below requireAuth, so every cookbook route is authenticated.
+// ---------------------------------------------------------------------------
+
+app.route("/api/cookbooks", cookbooks);
+
+// ---------------------------------------------------------------------------
 // Recipes
 // ---------------------------------------------------------------------------
 
@@ -90,13 +91,17 @@ app.get("/api/recipes", async (c) => {
   const tag = c.req.query("tag");
   const favoritesOnly = c.req.query("favorites") === "1";
 
+  // cb is a plain 1:1 join, so it doesn't multiply rows against the DISTINCT
+  // the other joins need. cookbook_title rides along so a card can badge
+  // where the recipe came from.
   let sql = `
-    SELECT DISTINCT r.*
+    SELECT DISTINCT r.*, cb.title AS cookbook_title
     FROM recipes r
     LEFT JOIN ingredients i ON i.recipe_id = r.id
     LEFT JOIN recipe_tags rt ON rt.recipe_id = r.id
     LEFT JOIN tags t ON t.id = rt.tag_id
     LEFT JOIN favorites f ON f.recipe_id = r.id
+    LEFT JOIN cookbooks cb ON cb.id = r.cookbook_id
     WHERE 1=1
   `;
   const params: string[] = [];
@@ -104,6 +109,14 @@ app.get("/api/recipes", async (c) => {
   if (search) {
     sql += " AND (r.title LIKE ? OR i.name LIKE ?)";
     params.push(`%${search}%`, `%${search}%`);
+  } else {
+    // Browsing shows your own recipes plus the books you've chosen to surface;
+    // a few hundred imported cookbook recipes would otherwise bury them.
+    //
+    // Searching deliberately skips this filter: hidden means "not in my way",
+    // not "unfindable". If you go looking for a title by name you should get
+    // it, whichever book it came from — the card says which.
+    sql += " AND (r.cookbook_id IS NULL OR cb.show_in_recipe_list = 1)";
   }
   if (tag) {
     sql += " AND t.name = ?";
@@ -170,6 +183,11 @@ interface RecipePayload {
   difficulty?: string;
   source_url?: string;
   notes?: string;
+  // Which book this recipe comes from. Set by the cookbook importer, and
+  // settable by hand so a recipe typed out of a paper cookbook can be filed
+  // under it.
+  cookbook_id?: number | null;
+  cookbook_page?: number | null;
   ingredients?: { name: string; quantity?: number; unit?: string }[];
   steps?: { text: string }[];
   tags?: string[];
@@ -184,8 +202,9 @@ app.post("/api/recipes", async (c) => {
 
   const result = await c.env.DB.prepare(
     `INSERT INTO recipes
-      (title, description, photo_url, servings, prep_time, cook_time, difficulty, source_url, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      (title, description, photo_url, servings, prep_time, cook_time, difficulty, source_url, notes,
+       cookbook_id, cookbook_page)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       body.title,
@@ -196,7 +215,9 @@ app.post("/api/recipes", async (c) => {
       body.cook_time ?? null,
       body.difficulty ?? null,
       body.source_url ?? null,
-      body.notes ?? null
+      body.notes ?? null,
+      body.cookbook_id ?? null,
+      body.cookbook_page ?? null
     )
     .run();
 
@@ -366,16 +387,29 @@ app.put("/api/recipes/:id", async (c) => {
   // has to mean "leave it alone". Treating absent as null wiped the photo of
   // every recipe on every save, and orphaned the R2 object behind it. An
   // explicit null still clears it, for a caller that actually means to.
-  const existing = await c.env.DB.prepare("SELECT photo_url FROM recipes WHERE id = ?")
+  const existing = await c.env.DB.prepare(
+    "SELECT photo_url, cookbook_id, cookbook_page FROM recipes WHERE id = ?"
+  )
     .bind(id)
-    .first<{ photo_url: string | null }>();
+    .first<{
+      photo_url: string | null;
+      cookbook_id: number | null;
+      cookbook_page: number | null;
+    }>();
   if (!existing) return c.json({ error: "Recette introuvable" }, 404);
   const photoUrl = body.photo_url !== undefined ? body.photo_url : existing.photo_url;
+  // Same rule as the photo above: a caller that doesn't mention the book
+  // isn't asking to unfile the recipe from it.
+  const cookbookId =
+    body.cookbook_id !== undefined ? body.cookbook_id : existing.cookbook_id;
+  const cookbookPage =
+    body.cookbook_page !== undefined ? body.cookbook_page : existing.cookbook_page;
 
   await c.env.DB.prepare(
     `UPDATE recipes SET
       title = ?, description = ?, photo_url = ?, servings = ?,
-      prep_time = ?, cook_time = ?, difficulty = ?, source_url = ?, notes = ?
+      prep_time = ?, cook_time = ?, difficulty = ?, source_url = ?, notes = ?,
+      cookbook_id = ?, cookbook_page = ?
      WHERE id = ?`
   )
     .bind(
@@ -388,6 +422,8 @@ app.put("/api/recipes/:id", async (c) => {
       body.difficulty ?? null,
       body.source_url ?? null,
       body.notes ?? null,
+      cookbookId,
+      cookbookPage,
       id
     )
     .run();
@@ -447,14 +483,8 @@ app.delete("/api/recipes/:id", async (c) => {
 // clean up after itself or every re-upload leaves a permanent orphan.
 // Deletion is best-effort: losing the DB row's new photo because a stale
 // object couldn't be removed would be a worse trade.
-async function deleteStalePhotos(env: Env, recipeId: string, keepKey?: string) {
-  try {
-    const listed = await env.PHOTOS.list({ prefix: `recipes/${recipeId}/` });
-    const stale = listed.objects.map((o) => o.key).filter((k) => k !== keepKey);
-    if (stale.length) await env.PHOTOS.delete(stale);
-  } catch (err) {
-    console.error("Could not clean up photos for recipe", recipeId, err);
-  }
+function deleteStalePhotos(env: Env, recipeId: string, keepKey?: string) {
+  return deleteStaleObjects(env, `recipes/${recipeId}/`, keepKey);
 }
 
 // Photo upload — stores the file in R2 and returns its public path,
@@ -464,18 +494,12 @@ app.post("/api/recipes/:id/photo", async (c) => {
   const form = await c.req.formData();
   const file = form.get("photo");
 
-  const isFile = (v: unknown): v is File =>
-    typeof v === "object" && v !== null && "arrayBuffer" in v && "name" in v;
-
-  if (!isFile(file)) {
+  if (!isUploadedFile(file)) {
     return c.json({ error: "Aucune photo fournie" }, 400);
   }
 
   if (!ALLOWED_PHOTO_TYPES.has(file.type)) {
-    return c.json(
-      { error: "Format de fichier non pris en charge (JPEG, PNG, WEBP ou GIF requis)" },
-      400
-    );
+    return c.json({ error: PHOTO_TYPE_ERROR }, 400);
   }
 
   const key = `recipes/${id}/${Date.now()}-${file.name}`;

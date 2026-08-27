@@ -118,6 +118,63 @@ export const api = {
       method: favorite ? "POST" : "DELETE",
     }),
 
+  // --- Cookbooks ---------------------------------------------------------
+
+  getCookbooks: () => request<Cookbook[]>("/api/cookbooks"),
+
+  getCookbook: (id: number) => request<CookbookDetail>(`/api/cookbooks/${id}`),
+
+  createCookbook: (payload: CookbookPayload) =>
+    request<{ id: number }>("/api/cookbooks", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  updateCookbook: (id: number, payload: CookbookPayload) =>
+    request<{ ok: true }>(`/api/cookbooks/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+
+  // Kept apart from updateCookbook so toggling the switch on the book's page
+  // doesn't round-trip every other field.
+  setCookbookVisibility: (id: number, show: boolean) =>
+    request<{ ok: true }>(`/api/cookbooks/${id}/visibility`, {
+      method: "PUT",
+      body: JSON.stringify({ show_in_recipe_list: show }),
+    }),
+
+  // `recipes` decides what happens to the recipes taken from this book:
+  // "keep" (the default) leaves them as ordinary recipes, "delete" removes
+  // them too.
+  deleteCookbook: (id: number, recipes: "keep" | "delete" = "keep") =>
+    request<{ ok: true; deleted_recipes: number }>(
+      `/api/cookbooks/${id}?recipes=${recipes}`,
+      { method: "DELETE" }
+    ),
+
+  // Writes nothing — returns a preview the form loads, like importRecipe.
+  lookupCookbook: (query: { title?: string; author?: string; isbn?: string }) =>
+    request<CookbookLookupResult>("/api/cookbooks/lookup", {
+      method: "POST",
+      body: JSON.stringify(query),
+    }),
+
+  uploadCookbookCover: (id: number, file: File) => {
+    const form = new FormData();
+    form.append("cover", file);
+    return request<{ cover_url: string }>(`/api/cookbooks/${id}/cover`, {
+      method: "POST",
+      body: form,
+    });
+  },
+
+  setCookbookCoverFromUrl: (id: number, url: string) =>
+    request<{ cover_url: string }>(`/api/cookbooks/${id}/cover-from-url`, {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    }),
+
   getTags: () => request<Tag[]>("/api/tags"),
 
   getCategories: () => request<Category[]>("/api/categories"),
@@ -295,6 +352,11 @@ export interface Recipe {
   source_url: string | null;
   notes: string | null;
   created_at: string;
+  cookbook_id: number | null;
+  cookbook_page: number | null;
+  // Joined in by the list endpoint so a card can say which book it came from;
+  // not a column on recipes.
+  cookbook_title?: string | null;
 }
 
 export interface Ingredient {
@@ -325,6 +387,10 @@ export interface RecipeDetail extends Recipe {
 export interface RecipePayload {
   title: string;
   description?: string;
+  // Absent means "don't change" on update, so the form always sends both
+  // explicitly (null to unfile) rather than omitting them.
+  cookbook_id?: number | null;
+  cookbook_page?: number | null;
   servings?: number;
   prep_time?: number;
   cook_time?: number;
@@ -356,6 +422,70 @@ export interface ImportedRecipe {
   source_url?: string;
   source: "json-ld" | "fallback" | "pdf";
   warning?: string;
+}
+
+export interface Cookbook {
+  id: number;
+  title: string;
+  author: string | null;
+  publisher: string | null;
+  year: number | null;
+  isbn: string | null;
+  page_count: number | null;
+  description: string | null;
+  cover_url: string | null;
+  notes: string | null;
+  source_file_name: string | null;
+  source_file_size: number | null;
+  // SQLite has no boolean: 0 or 1.
+  show_in_recipe_list: number;
+  created_at: string;
+  // Counts from the list endpoint; absent on the detail endpoint.
+  entry_count?: number;
+  imported_count?: number;
+  recipe_count?: number;
+}
+
+/** A recipe as the cookbook detail page lists it — not the full record. */
+export interface CookbookRecipe {
+  id: number;
+  title: string;
+  photo_url: string | null;
+  prep_time: number | null;
+  cook_time: number | null;
+  difficulty: string | null;
+  cookbook_page: number | null;
+  created_at: string;
+}
+
+export interface CookbookDetail extends Cookbook {
+  recipes: CookbookRecipe[];
+}
+
+export interface CookbookPayload {
+  title: string;
+  author?: string | null;
+  publisher?: string | null;
+  year?: number | null;
+  isbn?: string | null;
+  page_count?: number | null;
+  description?: string | null;
+  notes?: string | null;
+  source_file_name?: string | null;
+  source_file_size?: number | null;
+  show_in_recipe_list?: boolean;
+}
+
+export interface CookbookLookupResult {
+  title: string;
+  author?: string;
+  publisher?: string;
+  year?: number;
+  isbn?: string;
+  page_count?: number;
+  description?: string;
+  cover_url?: string;
+  source: "openlibrary" | "googlebooks";
 }
 
 export interface Category {

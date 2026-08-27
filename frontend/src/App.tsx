@@ -7,6 +7,9 @@ import RecipeForm from "./pages/RecipeForm";
 import GroceryList from "./pages/GroceryList";
 import MealPlan from "./pages/MealPlan";
 import FoodDictionary from "./pages/FoodDictionary";
+import CookbookList from "./pages/CookbookList";
+import CookbookDetail from "./pages/CookbookDetail";
+import CookbookForm from "./pages/CookbookForm";
 import { getToken } from "./lib/api";
 
 function RequireAuth({ children }: { children: JSX.Element }) {
@@ -28,6 +31,16 @@ function RecipeDetailRoute() {
 function RecipeFormRoute() {
   const { id } = useParams();
   return <RecipeForm key={id ?? "new"} />;
+}
+
+function CookbookDetailRoute() {
+  const { id } = useParams();
+  return <CookbookDetail key={id} />;
+}
+
+function CookbookFormRoute() {
+  const { id } = useParams();
+  return <CookbookForm key={id ?? "new"} />;
 }
 
 export default function App() {
@@ -72,6 +85,38 @@ export default function App() {
             element={
               <RequireAuth>
                 <RecipeFormRoute />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/livres"
+            element={
+              <RequireAuth>
+                <CookbookList />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/livres/nouveau"
+            element={
+              <RequireAuth>
+                <CookbookFormRoute />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/livres/:id"
+            element={
+              <RequireAuth>
+                <CookbookDetailRoute />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/livres/:id/modifier"
+            element={
+              <RequireAuth>
+                <CookbookFormRoute />
               </RequireAuth>
             }
           />

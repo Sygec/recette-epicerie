@@ -33,7 +33,17 @@ CREATE TABLE IF NOT EXISTS recipes (
   difficulty TEXT,
   source_url TEXT,
   notes TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Which cookbook this recipe came from, and where in it. NULL for anything
+  -- typed in by hand or imported from a URL/PDF. Forward reference: SQLite
+  -- resolves foreign keys when rows are written, not when tables are created,
+  -- so cookbooks being defined further down is fine.
+  --
+  -- Last on purpose, after created_at: migration 0005 adds these with ALTER
+  -- TABLE, which can only append. Keeping the same order here means a
+  -- migrated database and one built fresh from this file are identical.
+  cookbook_id INTEGER REFERENCES cookbooks(id) ON DELETE SET NULL,
+  cookbook_page INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS ingredients (
@@ -52,6 +62,74 @@ CREATE TABLE IF NOT EXISTS steps (
   step_number INTEGER NOT NULL,
   text TEXT NOT NULL
 );
+
+-- ---------------------------------------------------------------------------
+-- Cookbooks
+--
+-- A catalogue of the books the user owns, plus an index of the recipes inside
+-- the ones that have a file. The file itself is never uploaded: the browser
+-- reads the PDF (frontend/src/lib/pdfPages.ts) and posts text, the same
+-- division of labour the single-recipe PDF import already uses.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS cookbooks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  author TEXT,
+  publisher TEXT,
+  year INTEGER,
+  isbn TEXT,
+  page_count INTEGER,
+  description TEXT,
+  cover_url TEXT,
+  notes TEXT,
+  -- Which local file this book expects, and how big it was. Not a checksum:
+  -- the point is to catch "you picked the wrong PDF", not to prove identity,
+  -- and hashing a 200 MB file in the browser to say so isn't worth it.
+  source_file_name TEXT,
+  source_file_size INTEGER,
+  -- Off by default: the whole reason for the catalogue is that a few hundred
+  -- imported recipes would otherwise swamp "Mes recettes". Search ignores
+  -- this flag, so nothing is ever unfindable.
+  show_in_recipe_list INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- One row per recipe found in the book's index, whether or not it has been
+-- imported. Kept separate from recipes so that scanning a book is cheap and
+-- repeatable: a re-scan merges into this table without touching anything the
+-- user has already imported or edited.
+CREATE TABLE IF NOT EXISTS cookbook_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cookbook_id INTEGER NOT NULL REFERENCES cookbooks(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  -- Accent- and case-folded title, via normalizeFoodIdentity(). Stored rather
+  -- than computed so the unique index below can use it.
+  title_key TEXT NOT NULL,
+  -- Nullable on purpose: an EPUB has no page numbers, and that format is a
+  -- planned follow-up. Ordering falls back to title when it's NULL.
+  page_number INTEGER,
+  end_page INTEGER,
+  chapter TEXT,
+  -- Set once imported; this is what makes "don't import twice" work, and what
+  -- greys the entry out in the picker. SET NULL on delete so deleting the
+  -- recipe makes the entry importable again rather than orphaning it.
+  recipe_id INTEGER REFERENCES recipes(id) ON DELETE SET NULL,
+  imported_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- The identity of an entry within its book. Note SQLite treats NULLs as
+-- distinct in a unique index, so page-less entries (EPUB, later) don't
+-- collide with each other on title alone — dedup for those is handled in
+-- cookbookIndex.ts rather than here.
+CREATE UNIQUE INDEX IF NOT EXISTS cookbook_entries_identity
+  ON cookbook_entries(cookbook_id, page_number, title_key);
+
+CREATE INDEX IF NOT EXISTS cookbook_entries_by_cookbook
+  ON cookbook_entries(cookbook_id);
+
+CREATE INDEX IF NOT EXISTS recipes_by_cookbook ON recipes(cookbook_id);
 
 -- ---------------------------------------------------------------------------
 -- Tags & favorites

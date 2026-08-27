@@ -177,6 +177,15 @@ export default function RecipeList() {
                       .filter(Boolean)
                       .join(" · ")}
                   </p>
+                  {/* Books are hidden from this list by default, so a result
+                      from one is usually a search hit reaching past that
+                      filter. Saying which book explains why it's here. */}
+                  {r.cookbook_title && (
+                    <p className="mt-1 truncate text-xs text-sage-dark">
+                      📖 {r.cookbook_title}
+                      {r.cookbook_page ? ` · p. ${r.cookbook_page}` : ""}
+                    </p>
+                  )}
                 </div>
               </Link>
             </li>

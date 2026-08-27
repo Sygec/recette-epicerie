@@ -433,17 +433,26 @@ export default function GroceryList() {
         </div>
       )}
 
-      {/* The dictionary used to be linked here too; it has its own nav tab
-          now, so this is back to just the list/store manager. The merge
-          notice below still links to it, where it's contextual rather than
-          a second permanent entry point. */}
-      <button
-        type="button"
-        onClick={() => setShowManageModal(true)}
-        className="mt-2 text-xs font-medium text-sage-dark hover:underline"
-      >
-        Gérer les listes et magasins
-      </button>
+      {/* The dictionary had its own nav tab for a while; the cookbook
+          catalogue needed that slot more. It lives here again because this is
+          where it's actually used — it exists to categorize and merge what
+          goes on this list. The merge notice below still links to it too,
+          where it's contextual rather than a second permanent entry point. */}
+      <div className="mt-2 flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={() => setShowManageModal(true)}
+          className="text-xs font-medium text-sage-dark hover:underline"
+        >
+          Gérer les listes et magasins
+        </button>
+        <Link
+          to="/dictionnaire"
+          className="text-xs font-medium text-sage-dark hover:underline"
+        >
+          Aliments
+        </Link>
+      </div>
       {showManageModal && (
         <ListStoreManager
           lists={lists}

@@ -1,11 +1,16 @@
 import { NavLink } from "react-router-dom";
-import { BookOpen, Calendar, Plus, ShoppingCart, Tags, type LucideIcon } from "lucide-react";
+import { BookOpen, Calendar, Library, Plus, ShoppingCart, type LucideIcon } from "lucide-react";
 
+// Five is what fits. Livres sits next to Recettes because that's the pairing
+// you move between — a book is a place recipes come from. Aliments gave up
+// this slot: it's the tab that gets used least, and it belongs beside the
+// grocery list it exists to serve, so it's a button in the Courses header
+// instead (see pages/GroceryList.tsx).
 const items: { to: string; end?: boolean; label: string; icon: LucideIcon }[] = [
   { to: "/", end: true, label: "Recettes", icon: BookOpen },
+  { to: "/livres", label: "Livres", icon: Library },
   { to: "/courses", label: "Courses", icon: ShoppingCart },
   { to: "/planification", label: "Planifier", icon: Calendar },
-  { to: "/dictionnaire", label: "Aliments", icon: Tags },
   { to: "/recettes/nouvelle", label: "Ajouter", icon: Plus },
 ];
 

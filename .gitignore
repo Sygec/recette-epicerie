@@ -27,3 +27,10 @@ npm-debug.log*
 
 # Stray compiled JS from worker TS sources
 worker/src/**/*.js
+
+# Cookbook source files used to test the importer. They are large, they are
+# the user's own purchased books, and they are not ours to redistribute — the
+# app never uploads them either (the browser reads them locally and posts
+# text). Keep any test fixtures derived from these to short factual extracts.
+*.pdf
+*.epub
