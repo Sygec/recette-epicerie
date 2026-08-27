@@ -4,9 +4,10 @@
 // 1600 lines. Mounted at /api/cookbooks, so it sits under the requireAuth
 // middleware index.ts installs on /api/* — there is no auth handling here.
 //
-// The recipe *index* inside a book (cookbook_entries) is deliberately not
-// here yet: this file is the catalogue, and a cookbook with no file at all —
-// a paper book on a shelf — is a first-class entry.
+// Two things live here. The catalogue itself — a cookbook with no file at
+// all, a paper book on a shelf, is a first-class entry — and the index of
+// recipes inside the books that do have a file. Actually importing a recipe
+// out of those pages is the next piece and is not here yet.
 
 import { Hono } from "hono";
 import type { Env } from "./types";
@@ -17,6 +18,19 @@ import {
   isUploadedFile,
   PHOTO_TYPE_ERROR,
 } from "./photos";
+import {
+  estimatePageOffset,
+  parseTableOfContents,
+  type TocPage,
+} from "./cookbookToc";
+import {
+  findCrossBookDuplicates,
+  mergeEntries,
+  titleKey,
+  withEndPages,
+  type IncomingEntry,
+  type StoredEntry,
+} from "./cookbookIndex";
 import {
   buildGoogleBooksUrl,
   buildOpenLibraryUrl,
@@ -371,6 +385,160 @@ cookbooks.post("/:id/cover-from-url", async (c) => {
   await deleteStaleObjects(c.env, coverPrefix(id), key);
 
   return c.json({ cover_url: coverUrl });
+});
+
+// ---------------------------------------------------------------------------
+// The recipe index inside a book
+//
+// The browser reads the PDF and posts text — the file itself never leaves the
+// machine, exactly as the single-recipe PDF import already works. See
+// frontend/src/lib/pdfPages.ts.
+// ---------------------------------------------------------------------------
+
+// A whole cookbook is megabytes of text, so these take slices rather than the
+// book: the front matter to find the contents in, and one or two lines per
+// page to locate where the printed numbering starts. Generous enough for a
+// large book's front matter, small enough that a mistake is a 413 rather than
+// a stalled request.
+const MAX_TOC_PAGES = 120;
+const MAX_HEADING_PAGES = 2000;
+const MAX_ENTRIES = 3000;
+
+interface TocRequest {
+  /** Front-of-book pages, full text, for finding and reading the contents. */
+  pages?: TocPage[];
+  /** Every page's first few lines, for working out the page-number offset. */
+  headings?: TocPage[];
+}
+
+/**
+ * Reads a book's printed contents. Writes nothing — like the recipe URL
+ * import, it returns a proposal the user confirms before anything is stored.
+ */
+cookbooks.post("/:id/toc", async (c) => {
+  const body = await c.req.json<TocRequest>();
+  const pages = Array.isArray(body.pages) ? body.pages : [];
+  const headings = Array.isArray(body.headings) ? body.headings : [];
+
+  if (!pages.length) {
+    return c.json({ error: "Aucune page n'a été transmise" }, 400);
+  }
+  if (pages.length > MAX_TOC_PAGES || headings.length > MAX_HEADING_PAGES) {
+    return c.json({ error: "Ce document est trop volumineux" }, 413);
+  }
+
+  const parsed = parseTableOfContents(pages);
+  // The offset needs the body of the book, which is what `headings` carries;
+  // fall back to the front pages alone rather than refusing to answer.
+  const offset = parsed.entries.length
+    ? estimatePageOffset(headings.length ? headings : pages, parsed.entries, parsed.toc_pages)
+    : null;
+
+  return c.json({ ...parsed, page_offset: offset });
+});
+
+/**
+ * Stores what the contents produced, merging into whatever is already there.
+ *
+ * Additive: see cookbookIndex.ts. Re-scanning a book is always safe, and an
+ * entry already linked to a recipe is never touched.
+ */
+cookbooks.post("/:id/index", async (c) => {
+  const id = c.req.param("id");
+  const body = await c.req.json<{ entries?: IncomingEntry[] }>();
+  const entries = Array.isArray(body.entries) ? body.entries : [];
+
+  const exists = await c.env.DB.prepare("SELECT id FROM cookbooks WHERE id = ?")
+    .bind(id)
+    .first();
+  if (!exists) return c.json({ error: "Livre introuvable" }, 404);
+
+  if (!entries.length) return c.json({ error: "Aucune recette à enregistrer" }, 400);
+  if (entries.length > MAX_ENTRIES) {
+    return c.json({ error: "Trop de recettes dans cette table des matières" }, 413);
+  }
+
+  const stored = await c.env.DB.prepare(
+    `SELECT id, title, title_key, page_number, end_page, chapter, recipe_id
+     FROM cookbook_entries WHERE cookbook_id = ?`
+  )
+    .bind(id)
+    .all<StoredEntry>();
+
+  const plan = mergeEntries(stored.results, withEndPages(entries));
+
+  const statements = [
+    ...plan.insert.map((entry) =>
+      c.env.DB.prepare(
+        `INSERT INTO cookbook_entries
+           (cookbook_id, title, title_key, page_number, end_page, chapter)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(cookbook_id, page_number, title_key) DO NOTHING`
+      ).bind(
+        id,
+        entry.title,
+        entry.title_key,
+        entry.page_number ?? null,
+        entry.end_page ?? null,
+        entry.chapter ?? null
+      )
+    ),
+    ...plan.update.map((entry) =>
+      c.env.DB.prepare(
+        "UPDATE cookbook_entries SET end_page = ?, chapter = ? WHERE id = ?"
+      ).bind(entry.end_page, entry.chapter, entry.id)
+    ),
+  ];
+
+  if (statements.length) await c.env.DB.batch(statements);
+
+  return c.json({
+    added: plan.insert.length,
+    updated: plan.update.length,
+    unchanged: plan.unchanged,
+  });
+});
+
+/** The stored index, with what has been imported and what looks familiar. */
+cookbooks.get("/:id/entries", async (c) => {
+  const id = c.req.param("id");
+
+  const exists = await c.env.DB.prepare("SELECT id FROM cookbooks WHERE id = ?")
+    .bind(id)
+    .first();
+  if (!exists) return c.json({ error: "Livre introuvable" }, 404);
+
+  const entries = await c.env.DB.prepare(
+    `SELECT id, title, title_key, page_number, end_page, chapter, recipe_id, imported_at
+     FROM cookbook_entries WHERE cookbook_id = ?`
+  )
+    .bind(id)
+    .all<StoredEntry & { imported_at: string | null }>();
+
+  // Everything you already have that did NOT come from this book, so a
+  // bundle that ships the same title twice can be spotted before importing.
+  const elsewhere = await c.env.DB.prepare(
+    `SELECT r.title, cb.title AS cookbook_title
+     FROM recipes r
+     LEFT JOIN cookbooks cb ON cb.id = r.cookbook_id
+     WHERE r.cookbook_id IS NULL OR r.cookbook_id != ?`
+  )
+    .bind(id)
+    .all<{ title: string; cookbook_title: string | null }>();
+
+  const duplicates = findCrossBookDuplicates(
+    entries.results.map((e) => ({ title: e.title, page_number: e.page_number })),
+    elsewhere.results
+  );
+  const byKey = new Map(duplicates.map((d) => [titleKey(d.title), d]));
+
+  return c.json({
+    entries: entries.results.map((entry) => ({
+      ...entry,
+      duplicate_of: byKey.get(entry.title_key) ?? null,
+    })),
+    imported: entries.results.filter((e) => e.recipe_id !== null).length,
+  });
 });
 
 export default cookbooks;

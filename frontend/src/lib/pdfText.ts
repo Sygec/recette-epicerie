@@ -5,8 +5,11 @@
 // offline. The server only receives text and interprets it — see
 // worker/src/recipeText.ts — so it doesn't care that a browser produced it.
 //
-// pdf.js is loaded on demand: it's the heaviest dependency in the app and
-// nobody who isn't importing a PDF should pay for it.
+// pdf.js is loaded on demand (see pdfjsLoader.ts): it's the heaviest
+// dependency in the app and nobody who isn't importing a PDF should pay for
+// it. Reading a whole cookbook rather than one recipe is pdfPages.ts.
+
+import { assertPdfBytes, loadPdfjs } from "./pdfjsLoader";
 
 // A positioned run of text as pdf.js reports it. Only the fields used here are
 // declared, so this doesn't depend on pdf.js's own types being importable.
@@ -71,32 +74,9 @@ export function linesFromTextItems(items: TextItemLike[], tolerance = 2): string
  * blank line. Throws with a French message the form can show directly.
  */
 export async function extractPdfText(file: File): Promise<string> {
-  // Dynamic import so pdf.js is fetched only when a PDF is actually imported.
-  //
-  // The legacy build, not the default one. pdf.js's default build assumes a
-  // browser new enough for Promise.withResolvers and the iterator helpers —
-  // Safari only got those in 17.4 and 18.4 — and Vite transpiles syntax, not
-  // runtime APIs, so on an older iPhone the import died with "undefined is not
-  // a function" before reading a byte. The legacy build carries the core-js
-  // polyfills for exactly these. It costs a few KB on a chunk that already
-  // loads only when someone imports a PDF.
-  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  // Vite resolves this to a bundled asset URL; without it pdf.js tries to
-  // fetch a worker from a path that doesn't exist in the built app. It has to
-  // be the legacy worker too — it parses the file in its own realm, with its
-  // own need for the polyfills.
-  pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-    "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
-    import.meta.url
-  ).toString();
-
+  const pdfjs = await loadPdfjs();
   const buffer = await file.arrayBuffer();
-
-  // Check the magic bytes rather than the file's declared type, which is
-  // whatever the OS guessed from the extension.
-  if (new TextDecoder().decode(buffer.slice(0, 5)) !== "%PDF-") {
-    throw new Error("Ce fichier ne semble pas être un PDF");
-  }
+  assertPdfBytes(buffer);
 
   // Keep the loading task: it owns the worker, and destroying it is what
   // actually releases both it and the parsed document.

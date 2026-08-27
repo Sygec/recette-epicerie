@@ -118,6 +118,31 @@ export const api = {
       method: favorite ? "POST" : "DELETE",
     }),
 
+  // --- Cookbook index (the recipes inside a book) -------------------------
+
+  // Writes nothing: returns what the printed contents appear to say, for the
+  // user to confirm. `pages` is the front of the book in full; `headings` is
+  // every page's first lines, which is all the page-offset estimate needs.
+  parseCookbookToc: (
+    id: number,
+    payload: { pages: PdfPageText[]; headings: PdfPageText[] }
+  ) =>
+    request<ParsedToc>(`/api/cookbooks/${id}/toc`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  saveCookbookIndex: (id: number, entries: TocEntryPayload[]) =>
+    request<{ added: number; updated: number; unchanged: number }>(
+      `/api/cookbooks/${id}/index`,
+      { method: "POST", body: JSON.stringify({ entries }) }
+    ),
+
+  getCookbookEntries: (id: number) =>
+    request<{ entries: CookbookEntry[]; imported: number }>(
+      `/api/cookbooks/${id}/entries`
+    ),
+
   // --- Cookbooks ---------------------------------------------------------
 
   getCookbooks: () => request<Cookbook[]>("/api/cookbooks"),
@@ -422,6 +447,43 @@ export interface ImportedRecipe {
   source_url?: string;
   source: "json-ld" | "fallback" | "pdf";
   warning?: string;
+}
+
+/** One page of text as the browser read it out of the PDF. */
+export interface PdfPageText {
+  page: number;
+  lines: string[];
+}
+
+export interface TocEntryPayload {
+  title: string;
+  page_number: number | null;
+  chapter?: string | null;
+}
+
+export interface ParsedToc {
+  entries: { title: string; page_number: number; chapter?: string }[];
+  toc_pages: number[];
+  /** PDF page minus printed page, or null when it couldn't be established. */
+  page_offset: number | null;
+  warning?: string;
+}
+
+export interface CookbookEntry {
+  id: number;
+  title: string;
+  title_key: string;
+  page_number: number | null;
+  end_page: number | null;
+  chapter: string | null;
+  /** Set once imported — this is what stops it being imported twice. */
+  recipe_id: number | null;
+  imported_at: string | null;
+  duplicate_of: {
+    title: string;
+    other_title: string;
+    other_cookbook: string;
+  } | null;
 }
 
 export interface Cookbook {

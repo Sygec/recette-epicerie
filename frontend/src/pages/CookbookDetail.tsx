@@ -113,6 +113,13 @@ export default function CookbookDetail() {
             >
               Modifier
             </Link>
+            <Link
+              to={`/livres/${book.id}/analyser`}
+              className="rounded-lg border border-sage bg-sage px-3 py-1.5 text-sm
+                         font-medium text-white hover:bg-sage-dark"
+            >
+              Analyser le PDF
+            </Link>
           </div>
         </div>
       </div>
@@ -174,9 +181,9 @@ export default function CookbookDetail() {
 
       {sortedRecipes.length === 0 ? (
         <p className="mt-4 rounded-card border border-line bg-white/50 p-4 text-sm text-ink/60">
-          Aucune recette de ce livre pour l'instant. L'import depuis le fichier
-          PDF arrive bientôt — en attendant, vous pouvez rattacher une recette à
-          ce livre en la créant normalement.
+          Aucune recette de ce livre pour l'instant. « Analyser le PDF » en
+          dresse la liste à partir de sa table des matières ; vous pouvez aussi
+          rattacher une recette à ce livre en la créant normalement.
         </p>
       ) : (
         <ul className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">

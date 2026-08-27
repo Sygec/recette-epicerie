@@ -10,6 +10,7 @@ import FoodDictionary from "./pages/FoodDictionary";
 import CookbookList from "./pages/CookbookList";
 import CookbookDetail from "./pages/CookbookDetail";
 import CookbookForm from "./pages/CookbookForm";
+import CookbookImport from "./pages/CookbookImport";
 import { getToken } from "./lib/api";
 
 function RequireAuth({ children }: { children: JSX.Element }) {
@@ -41,6 +42,11 @@ function CookbookDetailRoute() {
 function CookbookFormRoute() {
   const { id } = useParams();
   return <CookbookForm key={id ?? "new"} />;
+}
+
+function CookbookImportRoute() {
+  const { id } = useParams();
+  return <CookbookImport key={id} />;
 }
 
 export default function App() {
@@ -109,6 +115,14 @@ export default function App() {
             element={
               <RequireAuth>
                 <CookbookDetailRoute />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/livres/:id/analyser"
+            element={
+              <RequireAuth>
+                <CookbookImportRoute />
               </RequireAuth>
             }
           />
