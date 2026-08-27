@@ -102,6 +102,23 @@ export function splitColumns(
 }
 
 /**
+ * Runs one stage of reading a PDF, labelling anything it throws.
+ *
+ * A failure here reaches the user as a single line — on a phone there is no
+ * console and the stack is minified to nothing useful — so the message has to
+ * carry the one fact that makes it diagnosable: which stage broke. Reading a
+ * book has several, and they fail for quite different reasons.
+ */
+async function stage<T>(label: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    throw new Error(`[${label}] ${detail}`);
+  }
+}
+
+/**
  * Reads every page of a PDF, handing each to `onPage` as it is parsed.
  *
  * Streaming rather than returning everything: the caller can show progress
@@ -112,24 +129,29 @@ export async function extractPdfPages(
   onPage: (page: PdfPage, total: number) => void,
   options: { signal?: AbortSignal } = {}
 ): Promise<void> {
-  const pdfjs = await loadPdfjs();
-  let buffer: ArrayBuffer | null = await file.arrayBuffer();
+  const pdfjs = await stage("chargement de pdf.js", () => loadPdfjs());
+  let buffer: ArrayBuffer | null = await stage("lecture du fichier", () =>
+    file.arrayBuffer()
+  );
   assertPdfBytes(buffer);
 
   const loadingTask = pdfjs.getDocument({ data: new Uint8Array(buffer) });
-  // pdf.js has copied the bytes into its worker; a 200 MB book is 400 MB
-  // resident until this reference goes, which matters on a phone.
+  // The Uint8Array is a view over the same bytes, not a second copy, but the
+  // ArrayBuffer itself stays alive as long as anything references it — and
+  // pdf.js has its own copy in the worker by now.
   buffer = null;
 
-  const doc = await loadingTask.promise;
+  const doc = await stage("ouverture du document", () => loadingTask.promise);
   try {
     for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
       // Checked per page rather than per book: cancelling should stop within
       // milliseconds, not after another 300 pages.
       if (options.signal?.aborted) return;
 
-      const page = await doc.getPage(pageNumber);
-      const content = await page.getTextContent();
+      const page = await stage(`page ${pageNumber}`, () => doc.getPage(pageNumber));
+      const content = await stage(`texte de la page ${pageNumber}`, () =>
+        page.getTextContent()
+      );
       // content.items mixes positioned text runs with marked-content markers;
       // keep the runs and narrow them to the few fields this needs.
       const items: TextItemLike[] = content.items
