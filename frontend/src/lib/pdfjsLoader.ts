@@ -15,8 +15,58 @@ let loading: Promise<Pdfjs> | null = null;
  * heaviest dependency in the app and most visits never touch it. The promise
  * is cached, so reading a second document doesn't re-import it.
  */
+/**
+ * Teaches ReadableStream how to be iterated with `for await`, where the
+ * browser hasn't.
+ *
+ * pdf.js reads a page's text with `for await (const value of readableStream)`
+ * (getTextContent, pdf.mjs). That needs
+ * ReadableStream.prototype[Symbol.asyncIterator], which Chromium and Firefox
+ * provide and **WebKit still does not** — so on iPhone every call died with
+ * "undefined is not a function", the undefined thing being the missing
+ * iterator method. Reading any PDF on an iPhone was impossible, including the
+ * single-recipe import that predates the cookbook feature.
+ *
+ * The legacy pdf.js build carries core-js polyfills for Promise.withResolvers
+ * and friends, but not for this: it is a DOM interface, not a language
+ * feature, so core-js leaves it alone.
+ *
+ * Deliberately minimal — enough for a consumer that reads to completion or
+ * abandons the loop, which is what pdf.js does. No-op where the browser
+ * already has it.
+ */
+export function polyfillStreamAsyncIterator() {
+  const proto = (globalThis as { ReadableStream?: { prototype: object } })
+    .ReadableStream?.prototype as
+    | (ReadableStream & { [Symbol.asyncIterator]?: unknown })
+    | undefined;
+  if (!proto || proto[Symbol.asyncIterator]) return;
+
+  Object.defineProperty(proto, Symbol.asyncIterator, {
+    configurable: true,
+    writable: true,
+    value: function (this: ReadableStream) {
+      const reader = this.getReader();
+      return {
+        next: () => reader.read(),
+        // Called when the loop is exited early (break, throw). Without
+        // releasing the lock the stream can never be read again.
+        return(value?: unknown) {
+          reader.releaseLock();
+          return Promise.resolve({ done: true as const, value });
+        },
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+      };
+    },
+  });
+}
+
 export function loadPdfjs(): Promise<Pdfjs> {
   loading ??= (async () => {
+    // Before the import: pdf.js uses this the moment a page's text is read.
+    polyfillStreamAsyncIterator();
     // The legacy build, not the default one. pdf.js's default build assumes a
     // browser new enough for Promise.withResolvers and the iterator helpers —
     // Safari only got those in 17.4 and 18.4 — and Vite transpiles syntax, not

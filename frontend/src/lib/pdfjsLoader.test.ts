@@ -3,8 +3,8 @@
 // PDFs that report application/octet-stream, which made them impossible to
 // choose at all. That leaves this as the only gate, so it is worth testing.
 
-import { describe, expect, it } from "vitest";
-import { assertPdfBytes } from "./pdfjsLoader";
+import { afterEach, describe, expect, it } from "vitest";
+import { assertPdfBytes, polyfillStreamAsyncIterator } from "./pdfjsLoader";
 
 const bytesOf = (text: string) => new TextEncoder().encode(text).buffer;
 
@@ -28,5 +28,62 @@ describe("assertPdfBytes", () => {
 
   it("rejects an empty file instead of reading past the end", () => {
     expect(() => assertPdfBytes(bytesOf(""))).toThrow();
+  });
+});
+
+describe("polyfillStreamAsyncIterator", () => {
+  const proto = ReadableStream.prototype as ReadableStream & {
+    [Symbol.asyncIterator]?: unknown;
+  };
+  const native = proto[Symbol.asyncIterator];
+
+  afterEach(() => {
+    if (native) {
+      Object.defineProperty(proto, Symbol.asyncIterator, {
+        configurable: true,
+        writable: true,
+        value: native,
+      });
+    }
+  });
+
+  // TypeScript's DOM lib doesn't declare Symbol.asyncIterator on
+  // ReadableStream either — which is the same gap, in the type system. The
+  // cast is what lets the test iterate the way pdf.js does.
+  const streamOf = (...values: number[]) =>
+    new ReadableStream<number>({
+      start(controller) {
+        for (const v of values) controller.enqueue(v);
+        controller.close();
+      },
+    }) as ReadableStream<number> & AsyncIterable<number>;
+
+  it("makes for-await work where the browser has no async iterator", async () => {
+    // WebKit's state: pdf.js reads page text with `for await (const value of
+    // readableStream)`, which died here with "undefined is not a function".
+    delete proto[Symbol.asyncIterator];
+    polyfillStreamAsyncIterator();
+
+    const seen: number[] = [];
+    for await (const value of streamOf(1, 2, 3)) seen.push(value);
+    expect(seen).toEqual([1, 2, 3]);
+  });
+
+  it("releases the reader when the loop exits early", async () => {
+    delete proto[Symbol.asyncIterator];
+    polyfillStreamAsyncIterator();
+
+    const stream = streamOf(1, 2, 3);
+    for await (const value of stream) {
+      if (value === 2) break;
+    }
+    // If the lock were still held this would throw.
+    expect(() => stream.getReader()).not.toThrow();
+  });
+
+  it("leaves a browser that already has one alone", () => {
+    if (!native) return;
+    polyfillStreamAsyncIterator();
+    expect(proto[Symbol.asyncIterator]).toBe(native);
   });
 });
