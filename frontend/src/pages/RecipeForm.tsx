@@ -273,9 +273,12 @@ export default function RecipeForm() {
           </p>
 
           <p className={`${labelClass} mt-4`}>…ou depuis un PDF</p>
+          {/* No accept filter — see the note in pages/CookbookImport.tsx: a
+              phone-downloaded PDF often reports application/octet-stream and an
+              accept list makes it unselectable. assertPdfBytes checks the real
+              bytes instead. */}
           <input
             type="file"
-            accept="application/pdf,.pdf"
             disabled={importing}
             onChange={(e) => {
               const file = e.target.files?.[0];

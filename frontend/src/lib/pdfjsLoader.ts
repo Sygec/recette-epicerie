@@ -45,7 +45,16 @@ export function loadPdfjs(): Promise<Pdfjs> {
  * bytes are what pdf.js will actually try to parse.
  */
 export function assertPdfBytes(buffer: ArrayBuffer) {
-  if (new TextDecoder().decode(buffer.slice(0, 5)) !== "%PDF-") {
-    throw new Error("Ce fichier ne semble pas être un PDF");
+  const magic = new TextDecoder().decode(buffer.slice(0, 5));
+  if (magic === "%PDF-") return;
+
+  // EPUB and every other ebook format built on zip start with "PK". Worth
+  // naming, because "not a PDF" is unhelpful when the file is a book and the
+  // real answer is that this format isn't supported yet.
+  if (magic.startsWith("PK")) {
+    throw new Error(
+      "Ce fichier est un EPUB (ou une archive). Seuls les PDF sont pris en charge pour le moment."
+    );
   }
+  throw new Error("Ce fichier ne semble pas être un PDF");
 }

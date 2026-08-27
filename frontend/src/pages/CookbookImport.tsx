@@ -162,11 +162,24 @@ export default function CookbookImport() {
         appareil — le fichier lui-même n'est jamais envoyé, seulement le texte
         de sa table des matières.
       </p>
+      {/* The flip side of never uploading the file: it has to be on whatever
+          device you're holding. Easy to miss on a phone, where the book is
+          usually still sitting on a computer. */}
+      <p className="mt-1.5 text-xs text-ink/50">
+        Le fichier doit donc se trouver sur cet appareil. Sur téléphone, placez-le
+        d'abord dans Fichiers / Drive, ou faites l'analyse depuis un ordinateur :
+        l'index est ensuite disponible partout.
+      </p>
 
       <div className="mt-4 rounded-card border border-line bg-white/50 p-4">
+        {/* No accept filter on purpose. A PDF downloaded on a phone often
+            carries application/octet-stream rather than application/pdf, and an
+            accept list then greys it out in the picker with no way to override —
+            the file simply cannot be chosen. The magic bytes are checked when the
+            file is read (assertPdfBytes), which is a stronger test than the
+            picker's guess anyway. */}
         <input
           type="file"
-          accept="application/pdf,.pdf"
           disabled={busy}
           onChange={(e) => {
             const file = e.target.files?.[0];
