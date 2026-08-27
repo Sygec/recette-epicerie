@@ -143,6 +143,15 @@ export const api = {
       `/api/cookbooks/${id}/entries`
     ),
 
+  // Extracts every recipe on one page at once. Per page rather than per
+  // recipe because a cookbook page often holds several, and the model needs
+  // to see the whole page to attribute ingredients to the right one.
+  importCookbookPage: (id: number, page: number, text: string) =>
+    request<ImportPageResult>(`/api/cookbooks/${id}/pages/${page}/import`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    }),
+
   // --- Cookbooks ---------------------------------------------------------
 
   getCookbooks: () => request<Cookbook[]>("/api/cookbooks"),
@@ -484,6 +493,16 @@ export interface CookbookEntry {
     other_title: string;
     other_cookbook: string;
   } | null;
+}
+
+export interface ImportPageResult {
+  imported: { entry_id: number; recipe_id: number; title: string }[];
+  /** Titles the contents promised on this page that the model didn't find. */
+  not_found?: string[];
+  /** Set when every entry on the page had already been imported. */
+  skipped?: "already";
+  cost_usd: number;
+  usage?: { input_tokens: number; output_tokens: number };
 }
 
 export interface Cookbook {

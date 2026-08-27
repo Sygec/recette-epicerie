@@ -24,6 +24,12 @@ import {
   type TocPage,
 } from "./cookbookToc";
 import {
+  estimateCost,
+  extractRecipesFromPage,
+  toImportedRecipe,
+} from "./cookbookAi";
+import { titleKey as foldForMatch } from "./cookbookIndex";
+import {
   findCrossBookDuplicates,
   mergeEntries,
   titleKey,
@@ -403,6 +409,9 @@ cookbooks.post("/:id/cover-from-url", async (c) => {
 const MAX_TOC_PAGES = 120;
 const MAX_HEADING_PAGES = 2000;
 const MAX_ENTRIES = 3000;
+// One page of a cookbook. Far below the recipe import's 200k cap because this
+// is a single page, and a much larger payload means something went wrong.
+const MAX_PAGE_TEXT_LENGTH = 20_000;
 
 interface TocRequest {
   /** Front-of-book pages, full text, for finding and reading the contents. */
@@ -538,6 +547,149 @@ cookbooks.get("/:id/entries", async (c) => {
       duplicate_of: byKey.get(entry.title_key) ?? null,
     })),
     imported: entries.results.filter((e) => e.recipe_id !== null).length,
+  });
+});
+
+/**
+ * Extracts every recipe on one page and files them under this book.
+ *
+ * A page at a time, not a recipe at a time. In a real cookbook 77% of recipes
+ * shared a page with another and one page held eight, so per-recipe calls
+ * would be both eight times the cost and worse: the model needs to see the
+ * whole page to attribute ingredients to the right recipe.
+ *
+ * The caller sends the page's text, which it read locally. The entries to
+ * match against come from this book's stored index.
+ */
+cookbooks.post("/:id/pages/:page/import", async (c) => {
+  const id = c.req.param("id");
+  const pageNumber = Number(c.req.param("page"));
+  const { text } = await c.req.json<{ text?: string }>();
+
+  if (!Number.isFinite(pageNumber)) {
+    return c.json({ error: "Numéro de page invalide" }, 400);
+  }
+  if (!text || !text.trim()) {
+    return c.json({ error: "Aucun texte n'a été transmis pour cette page" }, 400);
+  }
+  if (text.length > MAX_PAGE_TEXT_LENGTH) {
+    return c.json({ error: "Cette page est trop volumineuse" }, 413);
+  }
+
+  const book = await c.env.DB.prepare("SELECT id FROM cookbooks WHERE id = ?")
+    .bind(id)
+    .first();
+  if (!book) return c.json({ error: "Livre introuvable" }, 404);
+
+  // Only entries not already imported. Re-checked here rather than trusted
+  // from the client: this is what stops a recipe being imported twice, so the
+  // server has to be the one enforcing it.
+  const pending = await c.env.DB.prepare(
+    `SELECT id, title, title_key, chapter FROM cookbook_entries
+     WHERE cookbook_id = ? AND page_number = ? AND recipe_id IS NULL`
+  )
+    .bind(id, pageNumber)
+    .all<{ id: number; title: string; title_key: string; chapter: string | null }>();
+
+  if (!pending.results.length) {
+    return c.json({ imported: [], skipped: "already", cost_usd: 0 });
+  }
+
+  const extraction = await extractRecipesFromPage(
+    c.env.ANTHROPIC_API_KEY,
+    text,
+    pending.results.map((e) => e.title)
+  );
+
+  const unclaimed = [...pending.results];
+  const imported: { entry_id: number; recipe_id: number; title: string }[] = [];
+
+  for (const extracted of extraction.recipes) {
+    const recipe = toImportedRecipe(extracted);
+    if (!recipe.title.trim() || !recipe.ingredients.length) continue;
+
+    // Match back to the entry the contents promised, so the recipe lands under
+    // the right title and that entry stops being offered. An extra recipe the
+    // contents didn't list is skipped rather than filed under a wrong entry.
+    const key = foldForMatch(recipe.title);
+    let index = unclaimed.findIndex((e) => e.title_key === key);
+    if (index === -1) {
+      index = unclaimed.findIndex(
+        (e) => e.title_key.includes(key) || key.includes(e.title_key)
+      );
+    }
+    if (index === -1) continue;
+    const [entry] = unclaimed.splice(index, 1);
+
+    const result = await c.env.DB.prepare(
+      `INSERT INTO recipes
+        (title, description, servings, prep_time, cook_time, notes, cookbook_id, cookbook_page)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(
+        entry.title,
+        recipe.description ?? null,
+        recipe.servings ?? null,
+        recipe.prep_time ?? null,
+        recipe.cook_time ?? null,
+        null,
+        id,
+        pageNumber
+      )
+      .run();
+    const recipeId = result.meta.last_row_id;
+
+    const statements = [
+      ...recipe.ingredients.map((ing, idx) =>
+        c.env.DB.prepare(
+          `INSERT INTO ingredients (recipe_id, name, quantity, unit, aisle_category, sort_order)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        ).bind(
+          recipeId,
+          ing.name,
+          ing.quantity ?? null,
+          ing.unit ?? null,
+          ing.aisle_category ?? null,
+          idx
+        )
+      ),
+      ...recipe.steps.map((step, idx) =>
+        c.env.DB.prepare(
+          "INSERT INTO steps (recipe_id, step_number, text) VALUES (?, ?, ?)"
+        ).bind(recipeId, idx + 1, step)
+      ),
+      // Claiming the entry belongs in the same batch as the rows it describes.
+      c.env.DB.prepare(
+        `UPDATE cookbook_entries
+         SET recipe_id = ?, imported_at = datetime('now')
+         WHERE id = ? AND recipe_id IS NULL`
+      ).bind(recipeId, entry.id),
+    ];
+    await c.env.DB.batch(statements);
+
+    // The book's chapter is a useful tag; the model's own tags are noisier, so
+    // the chapter wins and the rest follow it.
+    for (const tag of [entry.chapter, ...recipe.tags].filter(Boolean).slice(0, 4)) {
+      await c.env.DB.prepare(
+        "INSERT INTO tags (name) VALUES (?) ON CONFLICT(name) DO NOTHING"
+      )
+        .bind(tag)
+        .run();
+      await c.env.DB.prepare(
+        "INSERT OR IGNORE INTO recipe_tags (recipe_id, tag_id) SELECT ?, id FROM tags WHERE name = ?"
+      )
+        .bind(recipeId, tag)
+        .run();
+    }
+
+    imported.push({ entry_id: entry.id, recipe_id: recipeId, title: entry.title });
+  }
+
+  return c.json({
+    imported,
+    not_found: unclaimed.map((e) => e.title),
+    cost_usd: estimateCost(extraction.usage),
+    usage: extraction.usage,
   });
 });
 
