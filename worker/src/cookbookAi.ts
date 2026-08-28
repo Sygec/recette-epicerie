@@ -236,6 +236,9 @@ export function describeApiError(err: unknown): string {
   if (/authentication_error|invalid x-api-key|401/i.test(raw)) {
     return "Clé API refusée. Vérifiez ANTHROPIC_API_KEY (console.anthropic.com, API keys).";
   }
+  if (/content filtering policy|output blocked/i.test(raw)) {
+    return "L'IA a refusé de répondre pour cette page (filtrage de contenu côté Anthropic). C'est propre à ce texte : les autres pages continueront de fonctionner, et cette recette peut être saisie à la main.";
+  }
   if (/rate_limit|429/i.test(raw)) {
     return "Limite de débit atteinte chez Anthropic. Attendez quelques instants puis reprenez : les recettes déjà importées ne seront pas refacturées.";
   }

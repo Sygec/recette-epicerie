@@ -15,17 +15,23 @@ const FRONT_MATTER_PAGES = 40;
 // Enough of each page to recognise a recipe title, and little enough that a
 // 400-page book is a small request rather than megabytes of prose.
 const HEADING_LINES = 3;
-// Measured, not guessed: two real pages of a real cookbook came to $0.029 and
-// $0.047 with Claude Sonnet 5 — a dense page costs more than a sparse one, and
-// the structured-output schema is itself most of the input. Rounded up, so the
-// figure quoted before spending is not one the invoice contradicts.
-const COST_PER_PAGE_USD = 0.04;
+// Measured, not guessed, and re-measured once recipes started being sent as
+// whole page spans rather than single pages: $0.029 for a page of five short
+// marinades, $0.047 for one dense page, $0.063 for a three-page recipe. The
+// unit here is one request — one recipe or one group sharing a starting page —
+// not one page of the book. Rounded up, so the figure quoted beforehand is not
+// one the invoice contradicts.
+const COST_PER_PAGE_USD = 0.06;
 // Those same pages took 17 s and 30 s. The loop is sequential on purpose, so a
 // whole book is a walk away, not a spinner to sit through.
 const SECONDS_PER_PAGE = 25;
 // How many pages one recipe may claim. Generous enough for a recipe that runs
 // over a photo spread, small enough that a wrong end_page can't send a chapter.
 const MAX_SPAN_PAGES = 4;
+// How far to read when the index cannot say where a recipe ends — which is
+// only ever the last one in a book. Three pages is what the recipes in the
+// book this was built against actually occupy.
+const UNKNOWN_SPAN_PAGES = 3;
 
 type Phase = "idle" | "reading" | "parsing" | "done" | "error" | "importing";
 
@@ -191,8 +197,26 @@ export default function CookbookImport() {
       const ends = entries
         .filter((e) => e.page_number === start)
         .map((e) => e.end_page ?? start);
+      const declared = Math.max(start, ...ends);
+
+      // The last recipe in a book has no end_page: the contents say where it
+      // starts and nothing says where the book stops. Falling back to the
+      // starting page alone silently truncated it — the first recipe imported
+      // this way was the last in its book, and arrived with 7 steps instead
+      // of 24. So when the end is unknown, run to just before the next recipe,
+      // or a typical recipe's length if there is no next one.
+      const nextStart = Math.min(
+        ...entries
+          .map((e) => e.page_number)
+          .filter((p): p is number => p !== null && p > start),
+        Infinity
+      );
+      const assumed = Number.isFinite(nextStart)
+        ? nextStart - 1
+        : start + UNKNOWN_SPAN_PAGES - 1;
+
       // Capped: a bad end_page shouldn't send half the book as one request.
-      const end = Math.min(Math.max(start, ...ends), start + MAX_SPAN_PAGES - 1);
+      const end = Math.min(Math.max(declared, assumed), start + MAX_SPAN_PAGES - 1);
       const parts: string[] = [];
       for (let p = start; p <= end; p++) {
         const t = pageText.get(p);
