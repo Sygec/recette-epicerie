@@ -393,6 +393,11 @@ export default function CookbookImport() {
             <p className="mt-0.5 text-xs text-ink/50">
               {saved.added} ajoutée{saved.added > 1 ? "s" : ""} à l'index
               {saved.unchanged > 0 && `, ${saved.unchanged} déjà connue${saved.unchanged > 1 ? "s" : ""}`}.
+              {/* The build that produced this count. A phone can sit on a
+                  cached version for days while the server runs a newer one,
+                  and the numbers it then reports match neither — worth being
+                  able to see rather than deduce. */}
+              <span className="ml-1 text-ink/30">(build {__BUILD_ID__})</span>
               {result.page_offset !== null && result.page_offset !== 0 &&
                 ` La numérotation du livre est décalée de ${result.page_offset} page(s) par rapport au PDF.`}
             </p>
