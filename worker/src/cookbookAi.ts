@@ -78,6 +78,13 @@ const PageSchema = z.object({
 
 export type ExtractedRecipe = z.infer<typeof ExtractedRecipeSchema>;
 
+// On step structure: an earlier version said "one action per step", added
+// after a recipe arrived as one 594-character block. That block was caused by
+// a truncated page span rather than by the prompt, and the rule then
+// over-corrected — a recipe whose method the book groups into five component
+// blocks came back as twenty-one sentence-sized steps. Inventing structure the
+// author did not write is the same kind of error as translating them.
+//
 // Written in English on purpose. The first version was in French, and the
 // model translated an English cookbook into French despite a rule telling it
 // not to — a prompt written wholly in one language is itself an instruction to
@@ -112,8 +119,15 @@ Rules:
   eggplant…") before the detailed instructions, which are often grouped by
   component ("FOR THE LAMB: …"). The recipe's steps are the detailed
   instructions, not the summary: ignore the summary.
-- Break the method into real steps — one action per step. Never return the
-  whole method as a single block.
+- Follow the author's own units. One step per unit the book itself creates: a
+  numbered step where it numbers them, a component block where it groups the
+  method under a heading like "FOR THE LAMB:". Never split one of the author's
+  units into several steps, and never merge two into one. If a paragraph holds
+  several actions — "Melt the butter, add the flour, and whisk for 2 minutes" —
+  that is one step, because the author wrote it as one.
+- The exception is a method printed as one undivided block with no numbering
+  and no headings. Split that at its natural actions, since the alternative is
+  a single unreadable step.
 - The text may span several pages: a page can begin mid-sentence, or be a
   photograph with no text. Join it back together.
 - If the page holds no complete recipe, return an empty list.
