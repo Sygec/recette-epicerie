@@ -205,10 +205,22 @@ export function parseTableOfContents(pages: TocPage[]): ParsedToc {
     }
   }
 
+  // A cookbook's contents open with front matter — "Why low/no sugar?", "How
+  // to stock your kitchen", "Tips" — which carry page numbers and look exactly
+  // like recipes. They sit above the first chapter heading, and the recipes do
+  // not. So when a book has chapters at all, anything listed before the first
+  // one is introduction rather than something to cook.
+  //
+  // Guarded on the book having chapters: with none, this signal says nothing
+  // and dropping the lot would empty the index.
+  const firstWithChapter = entries.findIndex((entry) => entry.chapter);
+  const recipes =
+    firstWithChapter > 0 ? entries.slice(firstWithChapter) : entries;
+
   return {
-    entries,
+    entries: recipes,
     toc_pages: tocPages,
-    ...(entries.length ? {} : {
+    ...(recipes.length ? {} : {
       warning:
         "La table des matières a été trouvée mais aucune recette n'a pu en être tirée.",
     }),

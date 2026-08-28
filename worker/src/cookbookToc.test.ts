@@ -260,3 +260,48 @@ describe("foldTitle", () => {
     );
   });
 });
+
+describe("front matter", () => {
+  it("drops the introduction sections a cookbook lists before its chapters", () => {
+    // "Baking with Less Sugar" opens its contents with these. They carry page
+    // numbers and look exactly like recipes; what separates them is that they
+    // sit above the first chapter heading.
+    const result = parseTableOfContents(
+      bookWith([
+        page(6, [
+          "CONTENTS",
+          "Introduction 8",
+          "Why low/no sugar? 11",
+          "How to stock your kitchen 20",
+          "Tips 24",
+          "How to substitute for sugar 26",
+          "CHAPTER ONE",
+          "WHITE SUGAR 31",
+          "Pear-Cardamom-Walnut Scones 32",
+          "Blueberry Bran Muffins 34",
+        ]),
+      ])
+    );
+    expect(result.entries.map((e) => e.title)).toEqual([
+      "Pear-Cardamom-Walnut Scones",
+      "Blueberry Bran Muffins",
+    ]);
+  });
+
+  it("keeps everything when a book has no chapters to measure against", () => {
+    // With no chapter headings the signal says nothing, and dropping on it
+    // would empty the index.
+    const result = parseTableOfContents(
+      bookWith([
+        page(6, [
+          "Tarte aux pommes 12",
+          "Soupe à l'oignon 18",
+          "Gratin dauphinois 24",
+          "Poulet rôti 30",
+          "Mousse au chocolat 36",
+        ]),
+      ])
+    );
+    expect(result.entries).toHaveLength(5);
+  });
+});

@@ -21,62 +21,87 @@ export interface PdfPage {
 /**
  * Finds the gutter between two columns of text, or null for a single column.
  *
- * A gutter is an empty *vertical band*, not a gap between two adjacent text
- * positions: both columns have text at many x positions, so consecutive
- * starts are never far apart. This buckets the horizontal span every item
- * covers and looks for a run of buckets nothing touches.
+ * Judged by what crosses a candidate line rather than by finding an entirely
+ * empty band. The empty-band version worked until a book whose left column
+ * held longer entries — "What's behind the science of sweets? 17" — whose text
+ * reached far enough right to fill the gutter. A handful of long lines should
+ * not veto a column break that fifty short ones agree on.
  *
- * Only bands in the middle of the page count. The widest empty band on any
- * page is the left margin, so taking the widest overall and then checking
- * whether it looks central finds the margin every time and gives up — which
- * is exactly the bug this had first time round.
+ * Two refinements matter, and both come from real pages:
+ *
+ * The widest quiet band wins, not the quietest single position. The gap
+ * between an entry's title and its page number is equally uncrossed, and
+ * choosing it splits a column down its own middle.
+ *
+ * Both sides must carry real content. Otherwise the quietest line on a page of
+ * ordinary prose is its right margin, and every page looks like two columns.
  *
  * Exported for its own sake: it's the fiddly part, and it's pure.
  */
 export function findGutter(
   items: TextItemLike[],
   pageWidth: number,
-  bucketSize = 10
+  step = 5
 ): number | null {
-  if (items.length < 8 || pageWidth <= 0) return null;
+  const real = items.filter((item) => item.str.trim());
+  if (real.length < 8 || pageWidth <= 0) return null;
 
-  const buckets = new Array(Math.max(1, Math.ceil(pageWidth / bucketSize))).fill(0);
-  for (const item of items) {
-    if (!item.str.trim()) continue;
-    const from = Math.max(0, Math.floor(item.transform[4] / bucketSize));
-    const to = Math.min(
-      buckets.length - 1,
-      Math.floor((item.transform[4] + (item.width ?? 0)) / bucketSize)
-    );
-    for (let b = from; b <= to; b++) buckets[b]++;
-  }
-
-  const runs: { from: number; to: number }[] = [];
-  let start: number | null = null;
-  buckets.forEach((count, index) => {
-    if (count === 0) start ??= index;
-    else if (start !== null) {
-      runs.push({ from: start, to: index });
-      start = null;
-    }
+  // A couple of stragglers crossing is normal; a column boundary is not
+  // required to be pristine.
+  const tolerance = Math.max(1, Math.floor(real.length * 0.02));
+  const spans = real.map((item) => {
+    const from = item.transform[4];
+    return [from, from + (item.width ?? 0)] as const;
   });
 
-  const candidates = runs
-    .map((run) => ({
-      centre: ((run.from + run.to) / 2) * bucketSize,
-      width: (run.to - run.from) * bucketSize,
-    }))
-    // Central enough to be a gutter rather than a margin, and wide enough to
-    // be deliberate rather than the space between two words.
-    .filter(
-      (run) =>
-        run.centre > pageWidth * 0.3 &&
-        run.centre < pageWidth * 0.7 &&
-        run.width >= pageWidth * 0.03
-    );
+  const probes: { x: number; quiet: boolean; left: number; right: number }[] = [];
+  for (let x = pageWidth * 0.3; x <= pageWidth * 0.7; x += step) {
+    let crossing = 0;
+    let left = 0;
+    let right = 0;
+    for (const [from, to] of spans) {
+      if (from < x && to > x) crossing++;
+      else if (to <= x) left++;
+      else right++;
+    }
+    probes.push({ x, quiet: crossing <= tolerance, left, right });
+  }
 
+  const bands: { from: number; to: number }[] = [];
+  let runStart: number | null = null;
+  probes.forEach((probe, index) => {
+    if (probe.quiet) runStart ??= index;
+    else if (runStart !== null) {
+      bands.push({ from: runStart, to: index - 1 });
+      runStart = null;
+    }
+  });
+  if (runStart !== null) bands.push({ from: runStart, to: probes.length - 1 });
+
+  const candidates = bands
+    // Narrow quiet patches are word spacing, not a gutter.
+    .filter((band) => (band.to - band.from + 1) * step >= 15)
+    // The split goes at the band's RIGHT edge, not its middle. The quiet
+    // region stretches from where the left column's text stops to where the
+    // right column starts, and that is wide — on one page it ran from x=200
+    // to x=270. Splitting down its middle put the left column's own page
+    // numbers, which start at x=240, into the right column, fusing two entries
+    // into "71 Tea Salad-Style Bowl (with Chicken!)". Everything to the left of
+    // where the next column begins belongs to the left one.
+    .map((band) => probes[band.to])
+    .filter(
+      (probe) =>
+        probe.left >= real.length * 0.2 && probe.right >= real.length * 0.2
+    );
   if (!candidates.length) return null;
-  return candidates.sort((a, b) => b.width - a.width)[0].centre;
+
+  // Columns straddle the page centre. A qualifying quiet band far from it is
+  // usually the gap between an entry's title and its page number.
+  const centre = pageWidth / 2;
+  candidates.sort(
+    (a, b) => Math.abs(a.x - centre) - Math.abs(b.x - centre)
+  );
+  return candidates[0].x;
 }
 
 /**

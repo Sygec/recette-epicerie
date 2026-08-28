@@ -92,6 +92,49 @@ describe("findGutter", () => {
   });
 });
 
+describe("findGutter, on layouts that broke earlier versions", () => {
+  it("finds a gutter a few long lines reach across", () => {
+    // "Baking with Less Sugar" p.6: its left column holds long entries like
+    // "What's behind the science of sweets? 17" whose text reaches into the
+    // gutter. Requiring a completely empty band found nothing here, and the
+    // two columns arrived fused into single lines.
+    const rows = twoColumnToc();
+    rows.push(item("What's behind the science of sweets?", 54, 610, 215));
+    rows.push(item("17", 275, 610, 10));
+    expect(findGutter(rows, PAGE_WIDTH)).not.toBeNull();
+  });
+
+  it("splits at the right edge of the gap, not down its middle", () => {
+    // "Bowls!" p.7: the quiet region runs from where the left column's text
+    // ends (~200) to where the right column starts (~276). Its midpoint, 238,
+    // puts the left column's own page numbers — which start at 240 — into the
+    // right column, fusing two entries into one line.
+    const rows: TextItemLike[] = [];
+    let y = 700;
+    for (const [title, page] of [["Simple Breakfast", "71"], ["Spunky Breakfast", "71"]] as const) {
+      rows.push(item(title, 54, y, 120), item(page, 240, y, 10));
+      y -= 18;
+    }
+    y = 700;
+    for (const [title, page] of [["Tea Salad Bowl", "123"], ["Slurpy Soba", "127"]] as const) {
+      rows.push(item(title, 276, y, 110), item(page, 400, y, 14));
+      y -= 18;
+    }
+    const gutter = findGutter(rows, PAGE_WIDTH)!;
+    expect(gutter).toBeGreaterThan(250);
+    // The left column's page numbers must stay on the left.
+    const [left] = splitColumns(rows, PAGE_WIDTH);
+    expect(left.map((i) => i.str)).toContain("71");
+  });
+
+  it("still declines a page of ordinary prose", () => {
+    const prose = Array.from({ length: 24 }, (_, i) =>
+      item("Une ligne de texte courante qui traverse toute la largeur", 54, 700 - i * 14, 430)
+    );
+    expect(findGutter(prose, PAGE_WIDTH)).toBeNull();
+  });
+});
+
 describe("splitColumns", () => {
   it("separates the two columns, left first", () => {
     const [left, right] = splitColumns(twoColumnToc(), PAGE_WIDTH);
