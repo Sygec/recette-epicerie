@@ -7,8 +7,12 @@ import { describe, expect, it } from "vitest";
 import {
   buildGoogleBooksUrl,
   buildOpenLibraryUrl,
+  buildOpenLibraryWorkUrl,
+  isSynopsis,
   mapGoogleBooks,
+  mapOpenLibraryWork,
   mapOpenLibrary,
+  mergeLookups,
   normalizeIsbn,
 } from "./cookbookLookup";
 
@@ -176,5 +180,141 @@ describe("mapGoogleBooks", () => {
     expect(mapGoogleBooks({ items: [] })).toBeNull();
     expect(mapGoogleBooks({ totalItems: 0 })).toBeNull();
     expect(mapGoogleBooks(null)).toBeNull();
+  });
+});
+
+describe("buildOpenLibraryUrl fields", () => {
+  it("asks for the fields Open Library withholds by default", () => {
+    // Its search endpoint returns ten fields unless told otherwise, with no
+    // publisher, ISBN, page count or cover — which is why a lookup used to
+    // come back with little more than a year.
+    const url = buildOpenLibraryUrl("Bowls");
+    for (const field of ["publisher", "isbn", "number_of_pages_median", "cover_i"]) {
+      expect(url).toContain(field);
+    }
+  });
+
+  it("asks for them on the ISBN route too", () => {
+    expect(buildOpenLibraryUrl("x", "9781452156279")).toContain("publisher");
+  });
+});
+
+describe("mergeLookups", () => {
+  const openLibrary = {
+    title: "Bowls!",
+    author: "Molly Watson",
+    publisher: "Chronicle Books LLC",
+    isbn: "9781452156279",
+    cover_url: "https://covers.openlibrary.org/b/id/1-L.jpg",
+    source: "openlibrary" as const,
+  };
+  const google = {
+    title: "Bowls! Recipes",
+    author: "Molly Watson, Nicole Franzen",
+    description: "A book about bowls.",
+    page_count: 176,
+    year: 2017,
+    source: "googlebooks" as const,
+  };
+
+  it("fills the gaps in the first answer from the second", () => {
+    const merged = mergeLookups(openLibrary, google)!;
+    // Open Library had no description, page count or year; Google Books did.
+    expect(merged.description).toBe("A book about bowls.");
+    expect(merged.page_count).toBe(176);
+    expect(merged.year).toBe(2017);
+  });
+
+  it("never lets the second answer overwrite the first", () => {
+    const merged = mergeLookups(openLibrary, google)!;
+    expect(merged.title).toBe("Bowls!");
+    expect(merged.author).toBe("Molly Watson");
+    expect(merged.publisher).toBe("Chronicle Books LLC");
+    expect(merged.source).toBe("openlibrary");
+  });
+
+  it("returns whichever one answered when only one did", () => {
+    expect(mergeLookups(null, google)).toEqual(google);
+    expect(mergeLookups(openLibrary, null)).toEqual(openLibrary);
+    expect(mergeLookups(null, null)).toBeNull();
+  });
+
+  it("treats an empty string as a gap worth filling", () => {
+    const merged = mergeLookups({ ...openLibrary, author: "" }, google)!;
+    expect(merged.author).toBe("Molly Watson, Nicole Franzen");
+  });
+});
+
+describe("mapOpenLibraryWork", () => {
+  // Long enough to read as a real blurb: isSynopsis rejects short fragments,
+  // because a "description" that short is usually catalogue data.
+  const BLURB =
+    "A hundred recipes for building a meal in a single bowl, from grains and beans to sauces.";
+
+  it("reads a description given as a plain string, and trims it", () => {
+    expect(mapOpenLibraryWork({ description: `  ${BLURB}  ` })).toEqual({
+      description: BLURB,
+    });
+  });
+
+  it("reads the older {type, value} shape too", () => {
+    // Open Library returns whichever the record happens to use.
+    expect(
+      mapOpenLibraryWork({ description: { type: "/type/text", value: BLURB } })
+    ).toEqual({ description: BLURB });
+  });
+
+  it("drops a catalogue description rather than offering it as a blurb", () => {
+    expect(mapOpenLibraryWork({ description: "160 pages : 24 cm" })).toEqual({});
+  });
+
+  it("keeps plain subjects and drops cataloguing noise", () => {
+    const result = mapOpenLibraryWork({
+      description: BLURB,
+      subjects: [
+        "Cooking",
+        "regional & ethnic cooking",
+        "nyt:advice-how-to-and-miscellaneous=2017-05-14",
+        "A subject far too long to be a useful tag on a recipe card",
+      ],
+    });
+    expect(result.tags).toEqual(["Cooking", "regional & ethnic cooking"]);
+  });
+
+  it("returns nothing rather than empty strings when the work is bare", () => {
+    expect(mapOpenLibraryWork({})).toEqual({});
+    expect(mapOpenLibraryWork(null)).toEqual({});
+    expect(mapOpenLibraryWork({ description: "   " })).toEqual({});
+  });
+});
+
+describe("buildOpenLibraryWorkUrl", () => {
+  it("builds the work-record URL from a search hit's key", () => {
+    expect(buildOpenLibraryWorkUrl("/works/OL18147901W")).toBe(
+      "https://openlibrary.org/works/OL18147901W.json"
+    );
+  });
+});
+
+describe("isSynopsis", () => {
+  it("rejects the physical description some records carry", () => {
+    // Real values seen from Open Library, offered as a cookbook's blurb.
+    expect(isSynopsis("160 pages : 24 cm")).toBe(false);
+    expect(isSynopsis("957 pages : 28 cm")).toBe(false);
+    expect(isSynopsis("xii, 320 p. ; 26 cm")).toBe(false);
+    expect(isSynopsis("240 unnumbered pages")).toBe(false);
+  });
+
+  it("accepts an actual blurb", () => {
+    expect(
+      isSynopsis(
+        "A visionary new master class in cooking that distills decades of professional experience into just four simple elements."
+      )
+    ).toBe(true);
+  });
+
+  it("rejects a fragment too short to be a blurb", () => {
+    expect(isSynopsis("Cookbook.")).toBe(false);
+    expect(isSynopsis("")).toBe(false);
   });
 });

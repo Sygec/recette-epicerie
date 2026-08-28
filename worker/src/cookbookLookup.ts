@@ -22,14 +22,128 @@ export interface CookbookLookupResult {
   cover_url?: string;
   /** Which provider answered, so the UI can say where the data came from. */
   source: "openlibrary" | "googlebooks";
+  /**
+   * Open Library's work id, when it answered. Search results never carry a
+   * description — it lives on the work record — so this is what makes a
+   * second, cheap request for one possible.
+   */
+  work_key?: string;
 }
 
+/** The work-record URL behind a search hit, for the description search omits. */
+export function buildOpenLibraryWorkUrl(workKey: string): string {
+  return `https://openlibrary.org${workKey}.json`;
+}
+
+/**
+ * Reads the description (and a subject or two) off an Open Library work.
+ *
+ * Descriptions arrive either as a plain string or as `{type, value}` depending
+ * on the record's age, which is the only reason this needs a mapper at all.
+ */
+export function mapOpenLibraryWork(payload: unknown): {
+  description?: string;
+  tags?: string[];
+} {
+  const work = payload as
+    | { description?: string | { value?: string }; subjects?: string[] }
+    | null;
+  if (!work) return {};
+
+  const raw = typeof work.description === "string"
+    ? work.description
+    : work.description?.value;
+  const description = raw?.trim();
+
+  return stripUndefinedFrom({
+    description: description && isSynopsis(description) ? description : undefined,
+    // Open Library's subject list trails off into cataloguing noise
+    // ("nyt:advice-how-to-and-miscellaneous=2017-05-14"), so keep the first
+    // few plain ones.
+    tags: work.subjects
+      ?.filter((s) => typeof s === "string" && !s.includes(":") && s.length < 30)
+      .slice(0, 4),
+  });
+}
+
+/**
+ * Rejects a "description" that is really a catalogue entry.
+ *
+ * Plenty of Open Library records put the physical description in that field,
+ * so a lookup offers "160 pages : 24 cm" as the blurb for a cookbook. That is
+ * worse than an empty box: it looks like data and has to be deleted by hand.
+ */
+export function isSynopsis(text: string): boolean {
+  const trimmed = text.trim();
+  // "160 pages : 24 cm", "xii, 320 p. ; 26 cm", "957 pages : illustrations"
+  if (/^[\dxivl,\s]*\d+\s*(unnumbered\s+)?(pages?|p\.)/i.test(trimmed)) return false;
+  if (/\d+\s*cm/i.test(trimmed) && trimmed.length < 120) return false;
+  // A real blurb is a sentence, not a fragment.
+  return trimmed.length >= 40;
+}
+
+function stripUndefinedFrom<T extends object>(value: T): T {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, v]) => v !== undefined)
+  ) as T;
+}
+
+/**
+ * The fields Open Library has to be asked for.
+ *
+ * Its search endpoint returns a trimmed record by default — ten fields, with
+ * no publisher, ISBN, page count or cover among them — so a lookup came back
+ * with little more than a year. Naming them explicitly is the difference
+ * between "Bowls!, 2017" and a filled-in form.
+ */
+const OPEN_LIBRARY_FIELDS = [
+  "key",
+  "title",
+  "subtitle",
+  "author_name",
+  "publisher",
+  "first_publish_year",
+  "isbn",
+  "number_of_pages_median",
+  "cover_i",
+].join(",");
+
 export function buildOpenLibraryUrl(query: string, isbn?: string): string {
+  const fields = `&fields=${OPEN_LIBRARY_FIELDS}&limit=5`;
   if (isbn) {
     const clean = normalizeIsbn(isbn);
-    if (clean) return `https://openlibrary.org/search.json?isbn=${clean}&limit=5`;
+    if (clean) return `https://openlibrary.org/search.json?isbn=${clean}${fields}`;
   }
-  return `https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&limit=5`;
+  return `https://openlibrary.org/search.json?q=${encodeURIComponent(query)}${fields}`;
+}
+
+/**
+ * Combines what two providers know about the same book.
+ *
+ * Neither has everything: Open Library is reliable for publisher and ISBN and
+ * serves covers at a predictable URL, while Google Books is where the
+ * description and the page count usually are. Asking both and taking whichever
+ * answered first — which is what this did — threw away half the answer.
+ *
+ * The first argument wins any field they disagree on; the second only fills
+ * gaps.
+ */
+export function mergeLookups(
+  primary: CookbookLookupResult | null,
+  secondary: CookbookLookupResult | null
+): CookbookLookupResult | null {
+  if (!primary) return secondary;
+  if (!secondary) return primary;
+
+  const merged: Record<string, unknown> = { ...primary };
+  for (const [key, value] of Object.entries(secondary)) {
+    // `source` names who answered first, so it is never overwritten.
+    if (key === "source") continue;
+    if (merged[key] === undefined || merged[key] === null || merged[key] === "") {
+      merged[key] = value;
+    }
+  }
+  return merged as unknown as CookbookLookupResult;
 }
 
 export function buildGoogleBooksUrl(query: string, isbn?: string): string {
@@ -47,6 +161,8 @@ export function normalizeIsbn(raw: string): string | undefined {
 // --- Open Library -----------------------------------------------------------
 
 interface OpenLibraryDoc {
+  /** The work this edition belongs to, e.g. "/works/OL18147901W". */
+  key?: string;
   title?: string;
   author_name?: string[];
   publisher?: string[];
@@ -69,6 +185,7 @@ export function mapOpenLibrary(payload: unknown): CookbookLookupResult | null {
   const isbn = doc.isbn?.find((value) => normalizeIsbn(value));
 
   return stripUndefined({
+    work_key: doc.key,
     title: doc.title,
     author: doc.author_name?.join(", "),
     publisher: doc.publisher?.[0],

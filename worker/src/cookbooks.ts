@@ -40,8 +40,11 @@ import {
 import {
   buildGoogleBooksUrl,
   buildOpenLibraryUrl,
+  buildOpenLibraryWorkUrl,
+  mapOpenLibraryWork,
   mapGoogleBooks,
   mapOpenLibrary,
+  mergeLookups,
   type CookbookLookupResult,
 } from "./cookbookLookup";
 
@@ -116,31 +119,69 @@ cookbooks.post("/lookup", async (c) => {
     { url: buildGoogleBooksUrl(query, isbn), map: mapGoogleBooks },
   ];
 
-  for (const { url, map } of attempts) {
+  // Both are asked, and their answers combined. Returning whichever replied
+  // first meant Google Books — where the description and page count usually
+  // are — was skipped entirely whenever Open Library knew the title, and a
+  // lookup came back with little more than a year.
+  const answers = await Promise.all(
+    attempts.map(async ({ url, map }) => {
+      try {
+        const response = await fetch(url, {
+          headers: {
+            // Open Library asks that automated clients identify themselves.
+            "User-Agent":
+              "Mozilla/5.0 (compatible; RecettesEtCoursesBot/1.0; +recette-epicerie)",
+            Accept: "application/json",
+          },
+        });
+        if (!response.ok) return null;
+        return map(await response.json());
+      } catch {
+        // Provider unreachable or returned junk — the other may still answer.
+        return null;
+      }
+    })
+  );
+
+  // Open Library leads: its covers have stable URLs and its publisher and ISBN
+  // are the more trustworthy of the two.
+  const merged = mergeLookups(answers[0], answers[1]);
+  if (!merged) {
+    return c.json(
+      {
+        error:
+          "Aucun livre trouvé pour ce titre. Saisissez les informations manuellement — vous pourrez toujours ajouter une couverture ensuite.",
+      },
+      404
+    );
+  }
+
+  // Open Library's search results never carry a description; it lives on the
+  // work record. One more cheap request rather than leaving the field empty,
+  // which matters more now that Google Books — the other source of
+  // descriptions — refuses anonymous callers once its daily quota is spent.
+  if (merged.work_key && !merged.description) {
     try {
-      const response = await fetch(url, {
+      const workResponse = await fetch(buildOpenLibraryWorkUrl(merged.work_key), {
         headers: {
-          // Open Library asks that automated clients identify themselves.
           "User-Agent":
             "Mozilla/5.0 (compatible; RecettesEtCoursesBot/1.0; +recette-epicerie)",
           Accept: "application/json",
         },
       });
-      if (!response.ok) continue;
-      const mapped = map(await response.json());
-      if (mapped) return c.json(mapped);
+      if (workResponse.ok) {
+        const extra = mapOpenLibraryWork(await workResponse.json());
+        if (extra.description) merged.description = extra.description;
+      }
     } catch {
-      // Provider unreachable or returned junk — try the next one.
+      // A missing description is not worth failing the lookup over.
     }
   }
 
-  return c.json(
-    {
-      error:
-        "Aucun livre trouvé pour ce titre. Saisissez les informations manuellement — vous pourrez toujours ajouter une couverture ensuite.",
-    },
-    404
-  );
+  // Internal plumbing, not something the form should receive.
+  delete merged.work_key;
+  return c.json(merged);
+
 });
 
 cookbooks.get("/:id", async (c) => {
