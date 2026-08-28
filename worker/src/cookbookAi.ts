@@ -256,7 +256,12 @@ export function describeApiError(err: unknown): string {
     return "Clé API refusée. Vérifiez ANTHROPIC_API_KEY (console.anthropic.com, API keys).";
   }
   if (/content filtering policy|output blocked/i.test(raw)) {
-    return "L'IA a refusé de répondre pour cette page (filtrage de contenu côté Anthropic). C'est propre à ce texte : les autres pages continueront de fonctionner, et cette recette peut être saisie à la main.";
+    // Seen once, on a lamb recipe, and it turned out not to be about the lamb:
+    // the model was translating the page rather than extracting it, and the
+    // French prose it invented is what tripped the filter. The same page went
+    // through untouched once the prompt stopped inviting translation. So this
+    // is worth retrying rather than giving up on.
+    return "L'IA a refusé de répondre pour cette page (filtrage de contenu côté Anthropic). Réessayez : c'est souvent passager. Si la page résiste, les autres ne sont pas affectées et cette recette peut être saisie à la main.";
   }
   if (/rate_limit|429/i.test(raw)) {
     return "Limite de débit atteinte chez Anthropic. Attendez quelques instants puis reprenez : les recettes déjà importées ne seront pas refacturées.";
