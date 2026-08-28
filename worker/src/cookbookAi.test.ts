@@ -38,8 +38,16 @@ describe("buildExtractionPrompt", () => {
 
   it("omits the expected-titles section when the index has nothing to offer", () => {
     const prompt = buildExtractionPrompt("du texte", []);
-    expect(prompt).not.toContain("table des matières");
+    expect(prompt).not.toContain("table of contents");
     expect(prompt).toContain("du texte");
+  });
+
+  it("is written in English, so it doesn't nudge an English book into French", () => {
+    // A French prompt around English book text is what made the model
+    // translate a whole cookbook, against an explicit rule not to.
+    const prompt = buildExtractionPrompt("page text", ["Budapest Bowl"]);
+    expect(prompt).not.toMatch(/D'après|Voici|Rends une entrée/);
+    expect(prompt).toContain("table of contents");
   });
 });
 

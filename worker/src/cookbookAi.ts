@@ -78,31 +78,48 @@ const PageSchema = z.object({
 
 export type ExtractedRecipe = z.infer<typeof ExtractedRecipeSchema>;
 
-const SYSTEM_PROMPT = `Tu extrais des recettes du texte brut d'une page de livre de cuisine.
+// Written in English on purpose. The first version was in French, and the
+// model translated an English cookbook into French despite a rule telling it
+// not to — a prompt written wholly in one language is itself an instruction to
+// answer in that language, and it drowned out the bullet point. The rule is
+// now first, stated twice, and no longer fighting the language it is written
+// in. The user's decision was to keep a book's own words: English ingredient
+// names already match food_dictionary's EN aliases, so translating them would
+// break grocery categorisation as well as being unfaithful to the book.
+const SYSTEM_PROMPT = `You extract recipes from the raw text of a cookbook page.
 
-Le texte provient d'un PDF : les colonnes peuvent être mélangées, des mots
-coupés en fin de ligne, et des fragments d'une colonne peuvent apparaître au
-milieu d'une autre. Reconstitue le sens plutôt que de recopier les lignes.
+NEVER TRANSLATE. Reproduce titles, ingredients and steps in the language the
+book is written in. If the page is in English, every string you return must be
+in English. This overrides any impulse to answer in the language of these
+instructions.
 
-Règles :
-- Une page peut contenir plusieurs recettes. Rends-les toutes, séparément.
-- N'invente jamais un ingrédient ou une étape absente du texte.
-- Attribue chaque ingrédient à la bonne recette. C'est le point le plus
-  important : ne mélange pas les ingrédients de deux recettes voisines.
-- Garde la langue d'origine du livre pour les titres, ingrédients et étapes.
-- Ignore les numéros de page, les titres de section courants, les légendes de
-  photos et le texte d'introduction qui n'appartient à aucune recette.
-- Une ligne qui énumère les composants d'un plat ("riz + poulet + avocat")
-  est une description, pas une étape.
-- Certains livres donnent d'abord un sommaire des opérations ("1. Cuire
-  l'agneau, 2. Cuire l'aubergine…") avant les instructions détaillées, souvent
-  regroupées par composant ("POUR L'AGNEAU : …"). Les étapes de la recette sont
-  les instructions détaillées, pas le sommaire : ignore ce dernier.
-- Découpe la méthode en étapes réelles — une action par étape. Ne rends jamais
-  toute la méthode en un seul bloc.
-- Le texte peut couvrir plusieurs pages : une page peut commencer au milieu
-  d'une phrase, ou être une photo sans texte. Recolle la suite.
-- Si la page ne contient aucune recette complète, rends une liste vide.`;
+The text comes from a PDF: columns may be interleaved, words hyphenated across
+line ends, and fragments of one column may appear inside another. Reconstruct
+the meaning rather than copying the lines.
+
+Rules:
+- Keep the book's original language. Do not translate, localise, or convert
+  units. "2 Tbsp soy sauce" stays "2 Tbsp soy sauce".
+- A page may hold several recipes. Return them all, separately.
+- Never invent an ingredient or a step that is not in the text.
+- Attribute each ingredient to the right recipe. This matters most: do not mix
+  the ingredients of two neighbouring recipes.
+- Ignore page numbers, running section headers, photo captions, and
+  introductory prose that belongs to no recipe.
+- A line listing a dish's components ("rice + chicken + avocado") is a
+  description, not a step.
+- Some books print a summary of operations ("1. Cook the lamb, 2. Cook the
+  eggplant…") before the detailed instructions, which are often grouped by
+  component ("FOR THE LAMB: …"). The recipe's steps are the detailed
+  instructions, not the summary: ignore the summary.
+- Break the method into real steps — one action per step. Never return the
+  whole method as a single block.
+- The text may span several pages: a page can begin mid-sentence, or be a
+  photograph with no text. Join it back together.
+- If the page holds no complete recipe, return an empty list.
+
+The aisle_category field is the one exception: it is a fixed French list and
+must be chosen from it, whatever the book's language.`;
 
 /**
  * Builds the request for one page.
@@ -115,12 +132,14 @@ export function buildExtractionPrompt(
   pageText: string,
   expectedTitles: string[]
 ): string {
+  // English, like the system prompt. A French request wrapped around English
+  // book text is the same nudge that made the model translate a whole book.
   const expected = expectedTitles.length
-    ? `\n\nD'après la table des matières, cette page devrait contenir :\n${expectedTitles
+    ? `\n\nThe table of contents says this page should contain:\n${expectedTitles
         .map((t) => `- ${t}`)
-        .join("\n")}\n\nRends une entrée par recette effectivement présente dans le texte.`
+        .join("\n")}\n\nReturn one entry per recipe actually present in the text.`
     : "";
-  return `Voici le texte d'une page :\n\n---\n${pageText}\n---${expected}`;
+  return `Here is the text of a page:\n\n---\n${pageText}\n---${expected}`;
 }
 
 /**
